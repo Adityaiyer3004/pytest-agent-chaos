@@ -6,12 +6,13 @@ and agent graph state machines.
 """
 
 from enum import Enum
-from typing import Any, Dict, List, Optional
+
 from pydantic import BaseModel, Field
 
 
 class FaultType(str, Enum):
     """Enumeration of deterministic fault types injected by agent-chaos."""
+
     RATE_LIMIT_429 = "rate_limit_429"
     GATEWAY_TIMEOUT_504 = "gateway_timeout_504"
     CONNECTION_TIMEOUT = "connection_timeout"
@@ -24,15 +25,21 @@ class FaultType(str, Enum):
 
 class ChaosProfile(BaseModel):
     """Configuration profile governing deterministic fault injection parameters."""
+
     fault_type: FaultType
     probability: float = Field(
-        default=1.0, ge=0.0, le=1.0, description="Probability of fault triggering on the target call"
+        default=1.0,
+        ge=0.0,
+        le=1.0,
+        description="Probability of fault triggering on the target call",
     )
     trigger_on_call: int = Field(
         default=1, ge=1, description="1-indexed call occurrence when fault must inject"
     )
     latency_ms: int = Field(
-        default=0, ge=0, description="Synthetic latency in milliseconds to inject before/during response"
+        default=0,
+        ge=0,
+        description="Synthetic latency in milliseconds to inject before/during response",
     )
     max_allowed_retries: int = Field(
         default=3, ge=0, description="Max retry attempts expected from resilient agent"
@@ -46,7 +53,7 @@ class ChaosProfile(BaseModel):
     drop_after_chunks: int = Field(
         default=1, ge=0, description="Number of SSE chunks emitted before cutting connection"
     )
-    target_domains: List[str] = Field(
+    target_domains: list[str] = Field(
         default_factory=lambda: [
             "api.openai.com",
             "api.anthropic.com",
@@ -63,14 +70,15 @@ class ChaosProfile(BaseModel):
 
 class ChaosTelemetry(BaseModel):
     """Execution telemetry captured during a test execution tick."""
-    test_name: Optional[str] = None
-    fault_type: Optional[FaultType] = None
+
+    test_name: str | None = None
+    fault_type: FaultType | None = None
     total_calls_intercepted: int = 0
     faults_injected: int = 0
     recovery_succeeded: bool = False
     total_retries_observed: int = 0
     peak_step_count: int = 0
-    error_messages: List[str] = Field(default_factory=list)
+    error_messages: list[str] = Field(default_factory=list)
 
     def mark_recovery(self) -> None:
         """Flags that the agent successfully adapted or retried after the fault."""
@@ -79,7 +87,8 @@ class ChaosTelemetry(BaseModel):
 
 class GraphAuditTelemetry(BaseModel):
     """Telemetry capturing agent state graph transitions and execution budgets."""
-    node_transitions: List[str] = Field(default_factory=list)
+
+    node_transitions: list[str] = Field(default_factory=list)
     step_count: int = 0
     max_steps_allowed: int = 10
     cycle_detected: bool = False

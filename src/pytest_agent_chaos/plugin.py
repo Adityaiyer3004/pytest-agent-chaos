@@ -6,7 +6,9 @@ fixtures (agent_chaos, stream_chaos, graph_auditor), and decorators (chaos_injec
 
 import functools
 import random
-from typing import Any, Callable, Generator, Optional
+from collections.abc import Callable, Generator
+from typing import Any
+
 import pytest
 from _pytest.terminal import TerminalReporter
 
@@ -65,7 +67,9 @@ def pytest_terminal_summary(
 
 
 @pytest.fixture
-def agent_chaos(request: pytest.FixtureRequest) -> Generator[Callable[[ChaosProfile], ChaosSandbox], None, None]:
+def agent_chaos(
+    request: pytest.FixtureRequest,
+) -> Generator[Callable[[ChaosProfile], ChaosSandbox], None, None]:
     """Pytest fixture providing a configurable ChaosSandbox for tool call corruption."""
     sandboxes: list[ChaosSandbox] = []
 
@@ -80,7 +84,9 @@ def agent_chaos(request: pytest.FixtureRequest) -> Generator[Callable[[ChaosProf
 
 
 @pytest.fixture
-def stream_chaos(request: pytest.FixtureRequest) -> Generator[Callable[[ChaosProfile], StreamChaosSandbox], None, None]:
+def stream_chaos(
+    request: pytest.FixtureRequest,
+) -> Generator[Callable[[ChaosProfile], StreamChaosSandbox], None, None]:
     """Pytest fixture providing a transport-level StreamChaosSandbox for httpx interception."""
     active_sandboxes: list[StreamChaosSandbox] = []
 
@@ -99,7 +105,9 @@ def stream_chaos(request: pytest.FixtureRequest) -> Generator[Callable[[ChaosPro
 
 
 @pytest.fixture
-def graph_auditor(request: pytest.FixtureRequest) -> Generator[Callable[..., StateGraphAuditor], None, None]:
+def graph_auditor(
+    request: pytest.FixtureRequest,
+) -> Generator[Callable[..., StateGraphAuditor], None, None]:
     """Pytest fixture providing a state machine transition auditor and cycle guardrail."""
     auditors: list[StateGraphAuditor] = []
 
@@ -112,13 +120,13 @@ def graph_auditor(request: pytest.FixtureRequest) -> Generator[Callable[..., Sta
 
 
 @pytest.fixture
-def chaos_sandbox() -> Optional[ChaosSandbox]:
+def chaos_sandbox() -> ChaosSandbox | None:
     """Fixture placeholder allowing tests decorated with @chaos_inject to accept chaos_sandbox."""
     return None
 
 
 @pytest.fixture
-def stream_sandbox() -> Optional[StreamChaosSandbox]:
+def stream_sandbox() -> StreamChaosSandbox | None:
     """Fixture placeholder allowing tests decorated with @stream_chaos_inject to accept stream_sandbox."""
     return None
 
@@ -130,6 +138,7 @@ def chaos_inject(
     probability: float = 1.0,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorator to inject deterministic tool corruption into an agent test case."""
+
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         @functools.wraps(func)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -144,7 +153,9 @@ def chaos_inject(
             GLOBAL_CHAOS_REGISTRY.register(sandbox.telemetry)
             kwargs["chaos_sandbox"] = sandbox
             return func(*args, **kwargs)
+
         return wrapper
+
     return decorator
 
 
@@ -156,6 +167,7 @@ def stream_chaos_inject(
     intercept_all_hosts: bool = False,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorator to inject transport stream drops or rate limits into an agent test case."""
+
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         @functools.wraps(func)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -171,5 +183,7 @@ def stream_chaos_inject(
                 GLOBAL_CHAOS_REGISTRY.register(stream_sb.telemetry)
                 kwargs["stream_sandbox"] = stream_sb
                 return func(*args, **kwargs)
+
         return wrapper
+
     return decorator

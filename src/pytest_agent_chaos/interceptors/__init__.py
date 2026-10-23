@@ -9,9 +9,9 @@ from pytest_agent_chaos.interceptors.state_graph import StateGraphAuditor
 from pytest_agent_chaos.interceptors.tool_corruptor import ChaosSandbox
 
 __all__ = [
-    "ChaosSandbox",
-    "StreamChaosSandbox",
-    "ChaosSyncByteStream",
     "ChaosAsyncByteStream",
+    "ChaosSandbox",
+    "ChaosSyncByteStream",
     "StateGraphAuditor",
+    "StreamChaosSandbox",
 ]

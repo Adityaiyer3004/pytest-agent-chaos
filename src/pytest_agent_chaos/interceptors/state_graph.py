@@ -5,8 +5,10 @@ tracking node visitation history, and enforcing strict step budgets to prevent r
 """
 
 import functools
-from typing import Any, Callable, Dict, List, Optional
-from pytest_agent_chaos.exceptions import AgentLoopExhaustedError, InfiniteAgentLoopError
+from collections.abc import Callable
+from typing import Any
+
+from pytest_agent_chaos.exceptions import InfiniteAgentLoopError
 from pytest_agent_chaos.models import GraphAuditTelemetry
 
 
@@ -46,9 +48,10 @@ class StateGraphAuditor:
                 self.telemetry.cycle_detected = True
 
     def wrap_node(
-        self, node_name: str, node_fn: Optional[Callable[..., Any]] = None
+        self, node_name: str, node_fn: Callable[..., Any] | None = None
     ) -> Callable[..., Any]:
         """Wraps a LangGraph node or step callable to audit every invocation."""
+
         def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
             @functools.wraps(fn)
             def wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -62,9 +65,10 @@ class StateGraphAuditor:
         return decorator
 
     def wrap_async_node(
-        self, node_name: str, node_fn: Optional[Callable[..., Any]] = None
+        self, node_name: str, node_fn: Callable[..., Any] | None = None
     ) -> Callable[..., Any]:
         """Wraps an asynchronous graph node to audit invocation."""
+
         def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
             @functools.wraps(fn)
             async def async_wrapper(*args: Any, **kwargs: Any) -> Any:

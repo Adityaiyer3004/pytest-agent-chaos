@@ -1,9 +1,9 @@
 """Self-tests verifying tool corruption, schema drift, and Pydantic validation recovery."""
 
 import json
-from typing import Any, Dict
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
 import pytest
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from pytest_agent_chaos.exceptions import AgentLoopExhaustedError
 from pytest_agent_chaos.interceptors.tool_corruptor import ChaosSandbox

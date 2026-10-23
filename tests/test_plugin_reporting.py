@@ -1,6 +1,7 @@
 """Self-tests verifying the terminal summary reporting table and resilience index calculations."""
 
 from unittest.mock import MagicMock
+
 from pytest_agent_chaos.models import ChaosTelemetry, FaultType
 from pytest_agent_chaos.reporting.terminal import (
     ChaosTelemetryRegistry,
@@ -39,7 +40,9 @@ def test_render_chaos_summary_table_output():
     # Check separator called
     assert mock_reporter.write_sep.called
     # Check lines written
-    calls_text = "".join(call.args[0] for call in mock_reporter.write_line.call_args_list if call.args)
+    calls_text = "".join(
+        call.args[0] for call in mock_reporter.write_line.call_args_list if call.args
+    )
 
     assert "Test Case" in calls_text
     assert "Fault Type" in calls_text

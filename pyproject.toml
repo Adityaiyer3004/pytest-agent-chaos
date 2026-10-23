@@ -60,6 +60,7 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 filterwarnings = [
     "ignore::DeprecationWarning",
+    "ignore::pytest.PytestAssertRewriteWarning",
 ]
 
 [tool.mypy]
@@ -72,3 +73,8 @@ disallow_incomplete_defs = true
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+
+[tool.ruff.lint]
+ignore = [
+    "PYI034",  # Self return type requires typing_extensions on Python 3.10
+]

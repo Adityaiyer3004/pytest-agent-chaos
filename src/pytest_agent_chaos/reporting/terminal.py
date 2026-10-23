@@ -4,17 +4,16 @@ Renders an enterprise-grade terminal summary table displaying injected fault typ
 intercepted transport/tool calls, retry backoffs observed, and the Agent Resilience Index.
 """
 
-from typing import Dict, List, Optional
-import pytest
 from _pytest.terminal import TerminalReporter
-from pytest_agent_chaos.models import ChaosTelemetry, FaultType
+
+from pytest_agent_chaos.models import ChaosTelemetry
 
 
 class ChaosTelemetryRegistry:
     """Session-level registry accumulating chaos telemetry records for summary reporting."""
 
     def __init__(self) -> None:
-        self.records: List[ChaosTelemetry] = []
+        self.records: list[ChaosTelemetry] = []
 
     def register(self, telemetry: ChaosTelemetry) -> None:
         """Registers a telemetry instance for end-of-session reporting."""
@@ -31,7 +30,7 @@ GLOBAL_CHAOS_REGISTRY = ChaosTelemetryRegistry()
 
 def render_chaos_summary_table(
     terminalreporter: TerminalReporter,
-    registry: Optional[ChaosTelemetryRegistry] = None,
+    registry: ChaosTelemetryRegistry | None = None,
 ) -> None:
     """Formats and prints the Agent Chaos Resilience Summary table to the pytest terminal.
 
@@ -65,7 +64,9 @@ def render_chaos_summary_table(
         total_faults += item.faults_injected
         total_calls += item.total_calls_intercepted
 
-        if item.recovery_succeeded or (item.faults_injected > 0 and item.total_retries_observed > 0):
+        if item.recovery_succeeded or (
+            item.faults_injected > 0 and item.total_retries_observed > 0
+        ):
             resilience_status = "RECOVERED"
             res_color = {"green": True, "bold": True}
             total_recovered += 1

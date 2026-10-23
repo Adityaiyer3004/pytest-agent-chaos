@@ -1,6 +1,5 @@
 """Integration test verifying LangGraph / cyclic multi-agent graph state transition audits."""
 
-from typing import Dict, List
 import pytest
 
 from pytest_agent_chaos.exceptions import InfiniteAgentLoopError
@@ -37,11 +36,11 @@ def test_state_graph_successful_termination_within_budget():
         return data.strip().lower()
 
     @auditor.wrap_node("sql_retriever")
-    def step_sql(query: str) -> List[str]:
+    def step_sql(query: str) -> list[str]:
         return ["row_1", "row_2"]
 
     @auditor.wrap_node("output_formatter")
-    def step_format(rows: List[str]) -> str:
+    def step_format(rows: list[str]) -> str:
         return f"Found {len(rows)} rows"
 
     # Execute workflow
