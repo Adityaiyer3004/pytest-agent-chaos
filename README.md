@@ -1,6 +1,6 @@
 # pytest-agent-chaos ⚡🤖
 
-[![CI](https://github.com/adityaiyer/pytest-agent-chaos/actions/workflows/ci.yml/badge.svg)](https://github.com/adityaiyer/pytest-agent-chaos/actions)
+[![CI](https://github.com/Adityaiyer3004/pytest-agent-chaos/actions/workflows/ci.yml/badge.svg)](https://github.com/Adityaiyer3004/pytest-agent-chaos/actions)
 [![PyPI version](https://img.shields.io/pypi/v/pytest-agent-chaos.svg)](https://pypi.org/project/pytest-agent-chaos/)
 [![Python versions](https://img.shields.io/pypi/pyversions/pytest-agent-chaos.svg)](https://pypi.org/project/pytest-agent-chaos/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -189,7 +189,7 @@ Chaos Resilience Index: 100.0% | Injected Faults Handled: 3/3 | Total Calls Inte
 
 ```bash
 # Clone the repository
-git clone https://github.com/adityaiyer/pytest-agent-chaos.git
+git clone https://github.com/Adityaiyer3004/pytest-agent-chaos.git
 cd pytest-agent-chaos
 
 # Install dev dependencies
