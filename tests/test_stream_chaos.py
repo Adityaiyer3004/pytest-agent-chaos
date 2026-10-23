@@ -1,14 +1,11 @@
 """Self-tests verifying HTTP transport interception, SSE midstream cutoffs, and retry backoffs."""
 
-import asyncio
-from typing import AsyncIterator, Iterator
+from collections.abc import AsyncIterator
+
 import httpx
 import pytest
 
-from pytest_agent_chaos.exceptions import ChaosStreamDropError
 from pytest_agent_chaos.interceptors.llm_stream import (
-    ChaosAsyncByteStream,
-    ChaosSyncByteStream,
     StreamChaosSandbox,
 )
 from pytest_agent_chaos.models import ChaosProfile, FaultType
@@ -46,7 +43,10 @@ def test_rate_limit_429_injection_and_recovery():
         if resp1.status_code == 429:
             resp2 = client.send(request)
             assert resp2.status_code == 200
-            assert resp2.json()["choices"][0]["message"]["content"] == "Successfully generated analysis."
+            assert (
+                resp2.json()["choices"][0]["message"]["content"]
+                == "Successfully generated analysis."
+            )
             assert sandbox.telemetry.recovery_succeeded
             assert sandbox.telemetry.total_retries_observed == 1
             assert sandbox.telemetry.total_calls_intercepted == 2
@@ -85,7 +85,9 @@ def test_connection_timeout_injection():
 
     with StreamChaosSandbox(profile) as sandbox:
         client = httpx.Client(transport=httpx.MockTransport(handler))
-        req = client.build_request("POST", "https://generativelanguage.googleapis.com/v1beta/models")
+        req = client.build_request(
+            "POST", "https://generativelanguage.googleapis.com/v1beta/models"
+        )
 
         with pytest.raises(httpx.ConnectTimeout):
             client.send(req)
@@ -125,7 +127,7 @@ def test_sse_midstream_drop_sync():
         received_tokens = []
         with pytest.raises(httpx.RemoteProtocolError):
             for chunk in resp1.iter_bytes():
-                received_tokens.append(chunk)
+                received_tokens.append(chunk)  # noqa: PERF402
 
         assert len(received_tokens) == 2
         assert sandbox.telemetry.faults_injected == 1

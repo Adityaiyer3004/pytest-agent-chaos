@@ -8,7 +8,9 @@ and malformed tool arguments before they hit the agent's parser.
 import functools
 import json
 import random
-from typing import Any, Callable, Dict, Optional, Union
+from collections.abc import Callable
+from typing import Any
+
 from pytest_agent_chaos.exceptions import AgentLoopExhaustedError
 from pytest_agent_chaos.models import ChaosProfile, ChaosTelemetry, FaultType
 
@@ -62,7 +64,7 @@ class ChaosSandbox:
         if self.profile.fault_type == FaultType.SCHEMA_TYPE_DRIFT:
             # Flip numeric fields to strings, strings to null, or nested objects
             try:
-                parsed: Dict[str, Any] = json.loads(raw_arguments)
+                parsed: dict[str, Any] = json.loads(raw_arguments)
                 for k, v in list(parsed.items()):
                     if isinstance(v, (int, float)):
                         parsed[k] = "CHAOS_INVALID_NUMBER_TYPE"
@@ -92,6 +94,7 @@ class ChaosSandbox:
 
         Can wrap standard Python functions, LangGraph tools, or Pydantic callables.
         """
+
         @functools.wraps(tool_func)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             # If arguments are passed as a JSON string or kwargs

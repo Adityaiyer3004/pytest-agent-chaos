@@ -7,12 +7,11 @@ at the HTTP client level to simulate mid-stream SSE (Server-Sent Events) chunk d
 
 import asyncio
 import time
-from typing import Any, AsyncIterator, Callable, Iterator, List, Optional
+from collections.abc import AsyncIterator, Callable, Iterator
+from typing import Any
+
 import httpx
-from pytest_agent_chaos.exceptions import (
-    ChaosStreamDropError,
-    ChaosTimeoutError,
-)
+
 from pytest_agent_chaos.models import ChaosProfile, ChaosTelemetry, FaultType
 
 
@@ -25,7 +24,7 @@ class ChaosSyncByteStream(httpx.SyncByteStream):
         drop_after_chunks: int = 1,
         should_drop: bool = False,
         latency_ms: int = 0,
-        telemetry: Optional[ChaosTelemetry] = None,
+        telemetry: ChaosTelemetry | None = None,
     ) -> None:
         self._original_stream = original_stream
         self._drop_after_chunks = drop_after_chunks
@@ -63,7 +62,7 @@ class ChaosAsyncByteStream(httpx.AsyncByteStream):
         drop_after_chunks: int = 1,
         should_drop: bool = False,
         latency_ms: int = 0,
-        telemetry: Optional[ChaosTelemetry] = None,
+        telemetry: ChaosTelemetry | None = None,
     ) -> None:
         self._original_stream = original_stream
         self._drop_after_chunks = drop_after_chunks
@@ -98,8 +97,8 @@ class StreamChaosSandbox:
     def __init__(self, profile: ChaosProfile) -> None:
         self.profile = profile
         self.telemetry = ChaosTelemetry(fault_type=profile.fault_type)
-        self._original_sync_send: Optional[Callable[..., Any]] = None
-        self._original_async_send: Optional[Callable[..., Any]] = None
+        self._original_sync_send: Callable[..., Any] | None = None
+        self._original_async_send: Callable[..., Any] | None = None
         self._is_active = False
 
     def is_target_host(self, host: str) -> bool:
@@ -110,9 +109,7 @@ class StreamChaosSandbox:
 
     def _should_inject_fault(self) -> bool:
         """Evaluates trigger count and probability."""
-        if self.telemetry.total_calls_intercepted == self.profile.trigger_on_call:
-            return True
-        return False
+        return self.telemetry.total_calls_intercepted == self.profile.trigger_on_call
 
     def _generate_429_response(self, request: httpx.Request) -> httpx.Response:
         self.telemetry.faults_injected += 1
@@ -135,7 +132,9 @@ class StreamChaosSandbox:
     def _generate_504_response(self, request: httpx.Request) -> httpx.Response:
         self.telemetry.faults_injected += 1
         headers = {"Content-Type": "application/json"}
-        content = b'{"error": {"message": "Gateway Timeout from upstream LLM provider.", "code": 504}}'
+        content = (
+            b'{"error": {"message": "Gateway Timeout from upstream LLM provider.", "code": 504}}'
+        )
         return httpx.Response(
             status_code=504,
             headers=headers,
@@ -163,7 +162,10 @@ class StreamChaosSandbox:
             send_kwargs["stream"] = True
 
         # Check if this call represents a recovery retry
-        if self.telemetry.faults_injected > 0 and self.telemetry.total_calls_intercepted > self.profile.trigger_on_call:
+        if (
+            self.telemetry.faults_injected > 0
+            and self.telemetry.total_calls_intercepted > self.profile.trigger_on_call
+        ):
             self.telemetry.total_retries_observed += 1
             self.telemetry.recovery_succeeded = True
 
@@ -184,9 +186,8 @@ class StreamChaosSandbox:
                 request=request,
             )
 
-        if self.profile.fault_type == FaultType.LATENCY_JITTER:
-            if self.profile.latency_ms > 0:
-                time.sleep(self.profile.latency_ms / 1000.0)
+        if self.profile.fault_type == FaultType.LATENCY_JITTER and self.profile.latency_ms > 0:
+            time.sleep(self.profile.latency_ms / 1000.0)
 
         # Execute downstream call
         response: httpx.Response = self._original_sync_send(client, request, *args, **send_kwargs)
@@ -224,7 +225,10 @@ class StreamChaosSandbox:
             send_kwargs["stream"] = True
 
         # Check recovery
-        if self.telemetry.faults_injected > 0 and self.telemetry.total_calls_intercepted > self.profile.trigger_on_call:
+        if (
+            self.telemetry.faults_injected > 0
+            and self.telemetry.total_calls_intercepted > self.profile.trigger_on_call
+        ):
             self.telemetry.total_retries_observed += 1
             self.telemetry.recovery_succeeded = True
 
@@ -244,11 +248,12 @@ class StreamChaosSandbox:
                 request=request,
             )
 
-        if self.profile.fault_type == FaultType.LATENCY_JITTER:
-            if self.profile.latency_ms > 0:
-                await asyncio.sleep(self.profile.latency_ms / 1000.0)
+        if self.profile.fault_type == FaultType.LATENCY_JITTER and self.profile.latency_ms > 0:
+            await asyncio.sleep(self.profile.latency_ms / 1000.0)
 
-        response: httpx.Response = await self._original_async_send(client, request, *args, **send_kwargs)
+        response: httpx.Response = await self._original_async_send(
+            client, request, *args, **send_kwargs
+        )
 
         if self.profile.fault_type == FaultType.SSE_MIDSTREAM_DROP:
             original_stream = response.stream
@@ -270,10 +275,14 @@ class StreamChaosSandbox:
 
             sandbox = self
 
-            def patched_sync_send(client_self: httpx.Client, request: httpx.Request, *args: Any, **kwargs: Any) -> httpx.Response:
+            def patched_sync_send(
+                client_self: httpx.Client, request: httpx.Request, *args: Any, **kwargs: Any
+            ) -> httpx.Response:
                 return sandbox.intercept_sync_send(client_self, request, *args, **kwargs)
 
-            async def patched_async_send(client_self: httpx.AsyncClient, request: httpx.Request, *args: Any, **kwargs: Any) -> httpx.Response:
+            async def patched_async_send(
+                client_self: httpx.AsyncClient, request: httpx.Request, *args: Any, **kwargs: Any
+            ) -> httpx.Response:
                 return await sandbox.intercept_async_send(client_self, request, *args, **kwargs)
 
             httpx.Client.send = patched_sync_send  # type: ignore[assignment]
@@ -281,7 +290,7 @@ class StreamChaosSandbox:
             self._is_active = True
         return self
 
-    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+    def __exit__(self, exc_type: object, exc_val: object, exc_tb: object) -> None:
         """Restores original send methods on httpx.Client and httpx.AsyncClient."""
         if self._is_active:
             if self._original_sync_send:
