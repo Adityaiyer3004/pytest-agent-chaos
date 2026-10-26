@@ -25,6 +25,7 @@ class ChaosSyncByteStream(httpx.SyncByteStream):
         should_drop: bool = False,
         latency_ms: int = 0,
         telemetry: ChaosTelemetry | None = None,
+        drop_mid_chunk: bool = False,
     ) -> None:
         self._original_stream = original_stream
         self._drop_after_chunks = drop_after_chunks
@@ -32,6 +33,7 @@ class ChaosSyncByteStream(httpx.SyncByteStream):
         self._latency_ms = latency_ms
         self._chunks_yielded = 0
         self._telemetry = telemetry
+        self._drop_mid_chunk = drop_mid_chunk
 
     def __iter__(self) -> Iterator[bytes]:
         for chunk in self._original_stream:
@@ -40,6 +42,9 @@ class ChaosSyncByteStream(httpx.SyncByteStream):
 
             self._chunks_yielded += 1
             if self._should_drop and self._chunks_yielded > self._drop_after_chunks:
+                if self._drop_mid_chunk and len(chunk) > 1:
+                    half = max(1, len(chunk) // 2)
+                    yield chunk[:half]
                 if self._telemetry:
                     self._telemetry.faults_injected += 1
                 raise httpx.RemoteProtocolError(
@@ -63,6 +68,7 @@ class ChaosAsyncByteStream(httpx.AsyncByteStream):
         should_drop: bool = False,
         latency_ms: int = 0,
         telemetry: ChaosTelemetry | None = None,
+        drop_mid_chunk: bool = False,
     ) -> None:
         self._original_stream = original_stream
         self._drop_after_chunks = drop_after_chunks
@@ -70,6 +76,7 @@ class ChaosAsyncByteStream(httpx.AsyncByteStream):
         self._latency_ms = latency_ms
         self._chunks_yielded = 0
         self._telemetry = telemetry
+        self._drop_mid_chunk = drop_mid_chunk
 
     async def __aiter__(self) -> AsyncIterator[bytes]:
         async for chunk in self._original_stream:
@@ -78,6 +85,9 @@ class ChaosAsyncByteStream(httpx.AsyncByteStream):
 
             self._chunks_yielded += 1
             if self._should_drop and self._chunks_yielded > self._drop_after_chunks:
+                if self._drop_mid_chunk and len(chunk) > 1:
+                    half = max(1, len(chunk) // 2)
+                    yield chunk[:half]
                 if self._telemetry:
                     self._telemetry.faults_injected += 1
                 raise httpx.RemoteProtocolError(
@@ -107,9 +117,14 @@ class StreamChaosSandbox:
             return True
         return any(domain in host for domain in self.profile.target_domains)
 
-    def _should_inject_fault(self) -> bool:
-        """Evaluates trigger count and probability."""
-        return self.telemetry.total_calls_intercepted == self.profile.trigger_on_call
+    def _get_active_fault(self) -> FaultType | None:
+        """Determines if a fault should inject on the current call occurrence."""
+        call_num = self.telemetry.total_calls_intercepted
+        if self.profile.fault_schedule and call_num in self.profile.fault_schedule:
+            return self.profile.fault_schedule[call_num]
+        if call_num == self.profile.trigger_on_call:
+            return self.profile.fault_type
+        return None
 
     def _generate_429_response(self, request: httpx.Request) -> httpx.Response:
         self.telemetry.faults_injected += 1
@@ -157,42 +172,44 @@ class StreamChaosSandbox:
 
         self.telemetry.total_calls_intercepted += 1
 
+        active_fault = self._get_active_fault()
+
         send_kwargs = dict(kwargs)
-        if self.profile.fault_type == FaultType.SSE_MIDSTREAM_DROP:
+        if (
+            active_fault == FaultType.SSE_MIDSTREAM_DROP
+            or self.profile.fault_type == FaultType.SSE_MIDSTREAM_DROP
+        ):
             send_kwargs["stream"] = True
 
         # Check if this call represents a recovery retry
-        if (
-            self.telemetry.faults_injected > 0
-            and self.telemetry.total_calls_intercepted > self.profile.trigger_on_call
-        ):
+        if self.telemetry.faults_injected > 0 and active_fault is None:
             self.telemetry.total_retries_observed += 1
             self.telemetry.recovery_succeeded = True
 
-        if not self._should_inject_fault():
+        if active_fault is None:
             return self._original_sync_send(client, request, *args, **send_kwargs)
 
         # Inject Faults
-        if self.profile.fault_type == FaultType.RATE_LIMIT_429:
+        if active_fault == FaultType.RATE_LIMIT_429:
             return self._generate_429_response(request)
 
-        if self.profile.fault_type == FaultType.GATEWAY_TIMEOUT_504:
+        if active_fault == FaultType.GATEWAY_TIMEOUT_504:
             return self._generate_504_response(request)
 
-        if self.profile.fault_type == FaultType.CONNECTION_TIMEOUT:
+        if active_fault == FaultType.CONNECTION_TIMEOUT:
             self.telemetry.faults_injected += 1
             raise httpx.ConnectTimeout(
                 f"pytest-agent-chaos: Simulated connection timeout to {request.url.host}",
                 request=request,
             )
 
-        if self.profile.fault_type == FaultType.LATENCY_JITTER and self.profile.latency_ms > 0:
+        if active_fault == FaultType.LATENCY_JITTER and self.profile.latency_ms > 0:
             time.sleep(self.profile.latency_ms / 1000.0)
 
         # Execute downstream call
         response: httpx.Response = self._original_sync_send(client, request, *args, **send_kwargs)
 
-        if self.profile.fault_type == FaultType.SSE_MIDSTREAM_DROP:
+        if active_fault == FaultType.SSE_MIDSTREAM_DROP:
             # Wrap stream with ChaosSyncByteStream
             original_stream = response.stream
             response.stream = ChaosSyncByteStream(
@@ -201,6 +218,7 @@ class StreamChaosSandbox:
                 should_drop=True,
                 latency_ms=self.profile.latency_ms,
                 telemetry=self.telemetry,
+                drop_mid_chunk=self.profile.drop_mid_chunk,
             )
 
         return response
@@ -220,42 +238,44 @@ class StreamChaosSandbox:
 
         self.telemetry.total_calls_intercepted += 1
 
+        active_fault = self._get_active_fault()
+
         send_kwargs = dict(kwargs)
-        if self.profile.fault_type == FaultType.SSE_MIDSTREAM_DROP:
+        if (
+            active_fault == FaultType.SSE_MIDSTREAM_DROP
+            or self.profile.fault_type == FaultType.SSE_MIDSTREAM_DROP
+        ):
             send_kwargs["stream"] = True
 
         # Check recovery
-        if (
-            self.telemetry.faults_injected > 0
-            and self.telemetry.total_calls_intercepted > self.profile.trigger_on_call
-        ):
+        if self.telemetry.faults_injected > 0 and active_fault is None:
             self.telemetry.total_retries_observed += 1
             self.telemetry.recovery_succeeded = True
 
-        if not self._should_inject_fault():
+        if active_fault is None:
             return await self._original_async_send(client, request, *args, **send_kwargs)
 
-        if self.profile.fault_type == FaultType.RATE_LIMIT_429:
+        if active_fault == FaultType.RATE_LIMIT_429:
             return self._generate_429_response(request)
 
-        if self.profile.fault_type == FaultType.GATEWAY_TIMEOUT_504:
+        if active_fault == FaultType.GATEWAY_TIMEOUT_504:
             return self._generate_504_response(request)
 
-        if self.profile.fault_type == FaultType.CONNECTION_TIMEOUT:
+        if active_fault == FaultType.CONNECTION_TIMEOUT:
             self.telemetry.faults_injected += 1
             raise httpx.ConnectTimeout(
                 f"pytest-agent-chaos: Simulated async connection timeout to {request.url.host}",
                 request=request,
             )
 
-        if self.profile.fault_type == FaultType.LATENCY_JITTER and self.profile.latency_ms > 0:
+        if active_fault == FaultType.LATENCY_JITTER and self.profile.latency_ms > 0:
             await asyncio.sleep(self.profile.latency_ms / 1000.0)
 
         response: httpx.Response = await self._original_async_send(
             client, request, *args, **send_kwargs
         )
 
-        if self.profile.fault_type == FaultType.SSE_MIDSTREAM_DROP:
+        if active_fault == FaultType.SSE_MIDSTREAM_DROP:
             original_stream = response.stream
             response.stream = ChaosAsyncByteStream(
                 original_stream=original_stream,
@@ -263,6 +283,7 @@ class StreamChaosSandbox:
                 should_drop=True,
                 latency_ms=self.profile.latency_ms,
                 telemetry=self.telemetry,
+                drop_mid_chunk=self.profile.drop_mid_chunk,
             )
 
         return response
