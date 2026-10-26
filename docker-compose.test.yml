@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  chaos-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile.proxy
+    ports:
+      - "8080:8080"  # Intercepted traffic and control plane port
+    networks:
+      - agent-mesh
+
+  redis-checkpointer:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    networks:
+      - agent-mesh
+
+  deployed-agent-service:
+    build:
+      context: ./agent_app
+      dockerfile: Dockerfile
+    environment:
+      - OPENAI_BASE_URL=http://chaos-proxy:8080/v1
+      - REDIS_URL=redis://redis-checkpointer:6379/0
+      - PORT=8000
+    ports:
+      - "8000:8000"
+    depends_on:
+      - chaos-proxy
+      - redis-checkpointer
+    networks:
+      - agent-mesh
+
+networks:
+  agent-mesh:
+    driver: bridge

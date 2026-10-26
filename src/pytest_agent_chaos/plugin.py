@@ -155,6 +155,45 @@ def chaos_sidecar(
         srv.stop()
 
 
+@pytest.fixture
+def chaos_proxy(
+    request: pytest.FixtureRequest,
+) -> Generator[Any, None, None]:
+    """Pytest fixture providing an isolated ChaosProxyClient to control the sidecar proxy."""
+    import httpx
+
+    from pytest_agent_chaos.proxy.client import ChaosProxyClient
+    from pytest_agent_chaos.proxy.runner import ChaosProxyRunner
+
+    client = ChaosProxyClient("http://localhost:8080")
+    runner: ChaosProxyRunner | None = None
+    if not client.is_healthy():
+        try:
+            runner = ChaosProxyRunner(port=8080)
+            runner.start(timeout=3.0)
+            client = ChaosProxyClient(runner.base_url)
+        except (OSError, TimeoutError, RuntimeError):
+            runner = ChaosProxyRunner(port=None)
+            runner.start(timeout=3.0)
+            client = ChaosProxyClient(runner.base_url)
+
+    try:
+        client.reset()
+    except (httpx.HTTPError, OSError):
+        pass
+
+    yield client
+
+    try:
+        client.reset()
+    except (httpx.HTTPError, OSError):
+        pass
+    client.close()
+
+    if runner:
+        runner.stop()
+
+
 def chaos_inject(
     fault: FaultType,
     trigger_on_call: int = 1,
