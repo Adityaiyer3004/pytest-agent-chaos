@@ -131,6 +131,30 @@ def stream_sandbox() -> StreamChaosSandbox | None:
     return None
 
 
+@pytest.fixture
+def chaos_sidecar(
+    request: pytest.FixtureRequest,
+) -> Generator[Callable[..., Any], None, None]:
+    """Pytest fixture providing a running out-of-process Chaos Proxy Sidecar."""
+    from pytest_agent_chaos.sidecar.runner import ChaosSidecarServer
+
+    servers: list[ChaosSidecarServer] = []
+
+    def _start_sidecar(
+        upstream_host: str = "https://api.openai.com",
+        port: int | None = None,
+    ) -> Any:
+        srv = ChaosSidecarServer(port=port, upstream_host=upstream_host)
+        client = srv.start()
+        servers.append(srv)
+        return client
+
+    yield _start_sidecar
+
+    for srv in servers:
+        srv.stop()
+
+
 def chaos_inject(
     fault: FaultType,
     trigger_on_call: int = 1,

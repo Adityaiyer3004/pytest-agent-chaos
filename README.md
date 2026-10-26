@@ -32,25 +32,26 @@ Most AI testing libraries focus on probabilistic LLM-as-a-judge assertions (like
 +-----------------------------------------------------------------------------------+
 |                                  PYTEST RUNNER                                    |
 +-----------------------------------------------------------------------------------+
-                                         │
-                 ┌───────────────────────┼───────────────────────┐
-                 ▼                       ▼                       ▼
-   +──────────────────────────+ +───────────────────+ +─────────────────────────+
-   |  Transport Interceptor   | |   Tool Corruptor  | |   State Graph Auditor   |
-   |     (httpx / SSE)        | |  (Pydantic/Tools) | |    (LangGraph / Loops)  |
-   +──────────────────────────+ +───────────────────+ +─────────────────────────+
-                 │                       │                       │
-                 ▼                       ▼                       ▼
-     • Mid-stream drop (SSE)       • JSON truncation       • Cycle detection
-     • 429 Retry-After storms      • Type schema drift     • Max step budget (Nmax)
-     • 504 Gateway timeouts        • Hallucinated fields   • Execution tick metrics
-                 │                       │                       │
-                 └───────────────────────┼───────────────────────┘
-                                         ▼
-                 +────────────────────────────────---------------+
-                 |       Agent Resilience Summary Reporter       |
-                 |  Resilience Index (%) | Injected / Recovered  |
-                 +────────────────────────────────---------------+
+             │                                                       │
+             ▼ [In-Process Zero-Token Testing]                       ▼ [Out-of-Process Network Chaos]
+  ┌───────────────────────┼───────────────────────┐         +─────────────────────────────────+
+  ▼                       ▼                       ▼         |     L7 Chaos Proxy Sidecar      |
++───────────────────+ +───────────────────+ +─────────────+ |   (Standalone AsyncIO :8085)    |
+| Transport Hook    | |  Tool Corruptor   | | State Graph | +─────────────────────────────────+
+| (httpx / SSE)     | | (Pydantic Schema) | |   Auditor   |              │
++───────────────────+ +───────────────────+ +─────────────+              ▼
+          │                       │                │        • Docker / Pod network drops
+          ▼                       ▼                ▼        • Mid-token raw TCP socket slice
+• Mid-stream drop (SSE) • JSON truncation  • Cycle detect   • External API 429/504 backoff
+• 429 Retry-After storms• Type schema drift• Step budget    • REST Control Plane (/_chaos/v1)
+• 504 Gateway timeouts  • Extra param ban  • Deadlock halts              │
+          │                       │                │                     │
+          └───────────────────────┼────────────────┴─────────────────────┘
+                                  ▼
+          +────────────────────────────────---------------+
+          |       Agent Resilience Summary Reporter       |
+          |  Resilience Index (%) | Injected / Recovered  |
+          +────────────────────────────────---------------+
 ```
 
 ---
@@ -139,6 +140,78 @@ def test_multi_agent_graph_loop_guardrail():
             state = planner_node(state)
             state = tool_node(state)
 ```
+
+### 5. Out-of-Process Chaos Proxy Sidecar (Docker / Kubernetes / FastAPI Testing)
+
+In-memory mocking verifies local Python logic, but real deployed agents run inside Docker containers or Kubernetes pods behind ingress gateways and middleboxes.
+
+`pytest-agent-chaos` includes a standalone **L7 Chaos Reverse Proxy Sidecar** that breaks live network connections, drops TCP sockets mid-SSE stream without sending a FIN packet, and injects cascading rate limits across network boundaries:
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│ Pod / Container Boundary / Local Network                               │
+│                                                                        │
+│  ┌─────────────────────────┐   HTTP traffic   ┌────────────────────────┐  TLS / HTTPS  ┌─────────────────────────┐
+│  │ Deployed Agent Service  │ ───────────────> │  Chaos Proxy Sidecar   │ ────────────> │  Upstream LLM Provider  │
+│  │  (FastAPI / LangGraph)  │                  │        (:8085)         │               │    (api.openai.com)     │
+│  └─────────────────────────┘                  └────────────────────────┘               └─────────────────────────┘
+│               ▲                                            ▲
+└───────────────┼────────────────────────────────────────────┼───────────────────────────────────────────────────┘
+                │ Test Input                                 │ Control Plane (/_chaos/v1/rules)
+                │                                            │
+    ┌────────────────────────┐                   ┌────────────────────────┐
+    │     Black-Box Test     │                   │  Pytest Sidecar Client │
+    │   (POST /api/v1/run)   │                   │  (pytest-agent-chaos)  │
+    └────────────────────────┘                   └────────────────────────┘
+```
+
+#### Pytest Integration (`chaos_sidecar` Fixture)
+
+```python
+import pytest
+from langchain_openai import ChatOpenAI
+from langgraph.prebuilt import create_react_agent
+from pytest_agent_chaos.sidecar.client import RemoteChaosClient
+
+def test_deployed_agent_recovers_from_network_chaos(chaos_sidecar: RemoteChaosClient):
+    # 1. Program chaos rule via proxy control plane REST API
+    chaos_sidecar.add_rule(
+        fault_type="rate_limit_429",
+        trigger_on_call=1,
+        retry_after=2,
+    )
+
+    # 2. Point deployed container or client at the proxy sidecar
+    # Environment variable: OPENAI_BASE_URL=http://localhost:8085/v1
+    llm = ChatOpenAI(
+        base_url=f"{chaos_sidecar.base_url}/v1",
+        api_key="sk-live-mock-token",
+        max_retries=2,
+    )
+    agent = create_react_agent(llm, tools=[])
+
+    # 3. Execution triggers HTTP 429 on Call 1, retries over TCP, succeeds on Call 2
+    result = agent.invoke({"messages": [("user", "Summarize report")]})
+    assert result["messages"][-1].content
+
+    # 4. Verify telemetry recorded across the container boundary
+    telemetry = chaos_sidecar.get_telemetry()
+    assert telemetry["total_calls"] == 2
+    assert telemetry["faults_injected"] == 1
+    assert telemetry["recovery_succeeded"] is True
+```
+
+#### Sidecar Control Plane API Reference
+
+The sidecar runs alongside your services, exposing control endpoints on `/_chaos/v1`:
+
+| Endpoint | Method | Purpose |
+| :--- | :--- | :--- |
+| `/_chaos/v1/health` | `GET` | Healthcheck and readiness probe for container orchestrators. |
+| `/_chaos/v1/rules` | `POST` | Program dynamic fault triggers (`rate_limit_429`, `gateway_timeout_504`, `sse_midstream_drop`, `latency_jitter`). |
+| `/_chaos/v1/rules` | `GET` | Inspect currently registered fault rules. |
+| `/_chaos/v1/rules` | `DELETE` | Flush all rules and reset proxy to transparent pass-through. |
+| `/_chaos/v1/telemetry` | `GET` | Extract cross-container metrics: `total_calls`, `faults_injected`, `retries_observed`, `recovery_succeeded`. |
 
 ---
 
