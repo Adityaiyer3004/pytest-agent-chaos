@@ -26,7 +26,11 @@ class FaultType(str, Enum):
 class ChaosProfile(BaseModel):
     """Configuration profile governing deterministic fault injection parameters."""
 
-    fault_type: FaultType
+    fault_type: FaultType = FaultType.RATE_LIMIT_429
+    fault_schedule: dict[int, FaultType] | None = Field(
+        default=None,
+        description="Multi-turn schedule mapping 1-indexed call count to specific FaultType (e.g., {1: RATE_LIMIT_429, 2: GATEWAY_TIMEOUT_504})",
+    )
     probability: float = Field(
         default=1.0,
         ge=0.0,
@@ -52,6 +56,10 @@ class ChaosProfile(BaseModel):
     )
     drop_after_chunks: int = Field(
         default=1, ge=0, description="Number of SSE chunks emitted before cutting connection"
+    )
+    drop_mid_chunk: bool = Field(
+        default=False,
+        description="If True, emits a partial / cut-off chunk mid-token before dropping connection",
     )
     target_domains: list[str] = Field(
         default_factory=lambda: [

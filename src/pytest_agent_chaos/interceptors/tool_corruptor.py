@@ -62,16 +62,28 @@ class ChaosSandbox:
             return raw_arguments[:cutoff]
 
         if self.profile.fault_type == FaultType.SCHEMA_TYPE_DRIFT:
-            # Flip numeric fields to strings, strings to null, or nested objects
+
+            def _drift_value(val: Any) -> Any:
+                if isinstance(val, (int, float)):
+                    return "CHAOS_INVALID_NUMBER_TYPE"
+                elif isinstance(val, bool):
+                    return ["unexpected", "array"]
+                elif isinstance(val, str):
+                    return None
+                elif isinstance(val, list):
+                    return [_drift_value(item) for item in val]
+                elif isinstance(val, dict):
+                    return {k: _drift_value(v) for k, v in val.items()}
+                return val
+
             try:
-                parsed: dict[str, Any] = json.loads(raw_arguments)
-                for k, v in list(parsed.items()):
-                    if isinstance(v, (int, float)):
-                        parsed[k] = "CHAOS_INVALID_NUMBER_TYPE"
-                    elif isinstance(v, str):
-                        parsed[k] = None
-                    elif isinstance(v, bool):
-                        parsed[k] = ["unexpected", "array"]
+                parsed: Any = json.loads(raw_arguments)
+                if isinstance(parsed, dict):
+                    mutated = {k: _drift_value(v) for k, v in parsed.items()}
+                    return json.dumps(mutated)
+                elif isinstance(parsed, list):
+                    mutated_list = [_drift_value(item) for item in parsed]
+                    return json.dumps(mutated_list)
                 return json.dumps(parsed)
             except json.JSONDecodeError:
                 return "{corrupted_payload: true"
