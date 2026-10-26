@@ -5,6 +5,7 @@ FastAPI backends, and external microservice boundaries over real network sockets
 """
 
 import asyncio
+from collections.abc import AsyncGenerator
 from typing import Any
 
 import httpx
@@ -156,7 +157,7 @@ def create_sidecar_app(default_upstream: str = "https://api.openai.com") -> Fast
             drop_after = active_rule.get("drop_after_chunks", 1) if active_rule else 1
             drop_mid_chunk = active_rule.get("drop_mid_chunk", False) if active_rule else False
 
-            async def chaos_stream_generator():
+            async def chaos_stream_generator() -> AsyncGenerator[bytes, None]:
                 chunk_count = 0
                 try:
                     async for chunk in upstream_resp.aiter_bytes():
