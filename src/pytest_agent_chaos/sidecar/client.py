@@ -2,7 +2,7 @@
 
 from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -46,19 +46,19 @@ class RemoteChaosClient:
 
         resp = self._http.post("/_chaos/v1/rules", json=rule_payload)
         resp.raise_for_status()
-        return resp.json()
+        return cast(dict[str, Any], resp.json())
 
     def get_telemetry(self) -> dict[str, Any]:
         """Queries recorded metrics from the sidecar proxy."""
         resp = self._http.get("/_chaos/v1/telemetry")
         resp.raise_for_status()
-        return resp.json()
+        return cast(dict[str, Any], resp.json())
 
     def clear_rules(self) -> dict[str, Any]:
         """Resets the proxy sidecar to clean transparent forwarding."""
         resp = self._http.delete("/_chaos/v1/rules")
         resp.raise_for_status()
-        return resp.json()
+        return cast(dict[str, Any], resp.json())
 
     @contextmanager
     def inject_fault(

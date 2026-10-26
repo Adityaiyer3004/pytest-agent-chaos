@@ -8,7 +8,7 @@ at the HTTP client level to simulate mid-stream SSE (Server-Sent Events) chunk d
 import asyncio
 import time
 from collections.abc import AsyncIterator, Callable, Iterator
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -168,7 +168,7 @@ class StreamChaosSandbox:
         assert self._original_sync_send is not None
 
         if not self.is_target_host(request.url.host):
-            return self._original_sync_send(client, request, *args, **kwargs)
+            return cast(httpx.Response, self._original_sync_send(client, request, *args, **kwargs))
 
         self.telemetry.total_calls_intercepted += 1
 
@@ -187,7 +187,9 @@ class StreamChaosSandbox:
             self.telemetry.recovery_succeeded = True
 
         if active_fault is None:
-            return self._original_sync_send(client, request, *args, **send_kwargs)
+            return cast(
+                httpx.Response, self._original_sync_send(client, request, *args, **send_kwargs)
+            )
 
         # Inject Faults
         if active_fault == FaultType.RATE_LIMIT_429:
@@ -207,13 +209,15 @@ class StreamChaosSandbox:
             time.sleep(self.profile.latency_ms / 1000.0)
 
         # Execute downstream call
-        response: httpx.Response = self._original_sync_send(client, request, *args, **send_kwargs)
+        response: httpx.Response = cast(
+            httpx.Response, self._original_sync_send(client, request, *args, **send_kwargs)
+        )
 
         if active_fault == FaultType.SSE_MIDSTREAM_DROP:
             # Wrap stream with ChaosSyncByteStream
             original_stream = response.stream
             response.stream = ChaosSyncByteStream(
-                original_stream=original_stream,
+                original_stream=cast(Iterator[bytes], original_stream),
                 drop_after_chunks=self.profile.drop_after_chunks,
                 should_drop=True,
                 latency_ms=self.profile.latency_ms,
@@ -234,7 +238,9 @@ class StreamChaosSandbox:
         assert self._original_async_send is not None
 
         if not self.is_target_host(request.url.host):
-            return await self._original_async_send(client, request, *args, **kwargs)
+            return cast(
+                httpx.Response, await self._original_async_send(client, request, *args, **kwargs)
+            )
 
         self.telemetry.total_calls_intercepted += 1
 
@@ -253,7 +259,10 @@ class StreamChaosSandbox:
             self.telemetry.recovery_succeeded = True
 
         if active_fault is None:
-            return await self._original_async_send(client, request, *args, **send_kwargs)
+            return cast(
+                httpx.Response,
+                await self._original_async_send(client, request, *args, **send_kwargs),
+            )
 
         if active_fault == FaultType.RATE_LIMIT_429:
             return self._generate_429_response(request)
@@ -271,14 +280,15 @@ class StreamChaosSandbox:
         if active_fault == FaultType.LATENCY_JITTER and self.profile.latency_ms > 0:
             await asyncio.sleep(self.profile.latency_ms / 1000.0)
 
-        response: httpx.Response = await self._original_async_send(
-            client, request, *args, **send_kwargs
+        response: httpx.Response = cast(
+            httpx.Response,
+            await self._original_async_send(client, request, *args, **send_kwargs),
         )
 
         if active_fault == FaultType.SSE_MIDSTREAM_DROP:
             original_stream = response.stream
             response.stream = ChaosAsyncByteStream(
-                original_stream=original_stream,
+                original_stream=cast(AsyncIterator[bytes], original_stream),
                 drop_after_chunks=self.profile.drop_after_chunks,
                 should_drop=True,
                 latency_ms=self.profile.latency_ms,
@@ -306,8 +316,8 @@ class StreamChaosSandbox:
             ) -> httpx.Response:
                 return await sandbox.intercept_async_send(client_self, request, *args, **kwargs)
 
-            httpx.Client.send = patched_sync_send  # type: ignore[assignment]
-            httpx.AsyncClient.send = patched_async_send  # type: ignore[assignment]
+            httpx.Client.send = patched_sync_send  # type: ignore[assignment,method-assign]
+            httpx.AsyncClient.send = patched_async_send  # type: ignore[assignment,method-assign]
             self._is_active = True
         return self
 
@@ -315,7 +325,7 @@ class StreamChaosSandbox:
         """Restores original send methods on httpx.Client and httpx.AsyncClient."""
         if self._is_active:
             if self._original_sync_send:
-                httpx.Client.send = self._original_sync_send  # type: ignore[assignment]
+                httpx.Client.send = self._original_sync_send  # type: ignore[method-assign]
             if self._original_async_send:
-                httpx.AsyncClient.send = self._original_async_send  # type: ignore[assignment]
+                httpx.AsyncClient.send = self._original_async_send  # type: ignore[method-assign]
             self._is_active = False

@@ -1,7 +1,7 @@
 """Pytest control client for configuring remote out-of-process chaos sidecars."""
 
 from collections.abc import Generator
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -99,7 +99,7 @@ class ChaosProxyClient:
 
     def get_telemetry(self) -> dict[str, Any]:
         """Fetches telemetry metrics from the sidecar proxy."""
-        return self.client.get(f"{self.control_url}/_chaos/telemetry").json()
+        return cast(dict[str, Any], self.client.get(f"{self.control_url}/_chaos/telemetry").json())
 
     def close(self) -> None:
         """Closes the HTTP client session."""
