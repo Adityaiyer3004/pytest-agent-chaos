@@ -13,13 +13,16 @@ from pytest_agent_chaos.models import GraphAuditTelemetry
 
 
 def _has_repeating_cycle(transitions: list[str]) -> bool:
-    """Detects any repeating node pattern of period 1..n//3 in the trailing transitions.
+    """Detects any repeating node pattern of period 2..n//3 in the trailing transitions.
 
     Requires 3 full repeats of the period before flagging, matching the confidence bar
     of the original period-2-only check this replaces (e.g. [A, B, A, B, A, B]).
+
+    Period 1 (the same node called several times in a row) is deliberately excluded:
+    that's a normal retry pattern, not evidence of a cyclic deadlock on its own.
     """
     n = len(transitions)
-    for period in range(1, n // 3 + 1):
+    for period in range(2, n // 3 + 1):
         block = transitions[-period:]
         if transitions[-2 * period : -period] == block and (
             transitions[-3 * period : -2 * period] == block

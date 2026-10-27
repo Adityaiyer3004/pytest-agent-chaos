@@ -300,3 +300,67 @@ def test_non_lifo_sandbox_exit_warns_instead_of_corrupting() -> None:
         # Force-restore here so this test doesn't leak the patch into later tests.
         httpx.Client.send = real_send  # type: ignore[method-assign]
         httpx.AsyncClient.send = real_async_send  # type: ignore[method-assign]
+
+
+# --- Bug 8: SSE drop that never actually fires must not mark the endpoint as faulted ---
+
+
+def test_sse_drop_that_never_fires_is_not_recorded_as_a_fault(live_url: str) -> None:
+    # drop_after_chunks is higher than the number of SSE events the server sends,
+    # so the drop condition in ChaosSyncByteStream is never satisfied.
+    profile = ChaosProfile(
+        fault_type=FaultType.SSE_MIDSTREAM_DROP,
+        trigger_on_call=1,
+        drop_after_chunks=10,
+        intercept_all_hosts=True,
+    )
+    with StreamChaosSandbox(profile) as sb, httpx.Client() as client:
+        with client.stream("POST", f"{live_url}/sse", json={}) as resp1:
+            full1 = resp1.read()
+        assert full1.endswith(b"[DONE]\n\n")
+        assert sb.telemetry.faults_injected == 0
+
+        with client.stream("POST", f"{live_url}/sse", json={}) as resp2:
+            resp2.read()
+        assert sb.telemetry.total_retries_observed == 0
+        assert sb.telemetry.recovery_succeeded is False
+
+
+# --- Bug 9: StreamChaosSandbox ignored profile.probability entirely ---
+
+
+def test_stream_sandbox_probability_zero_never_injects(live_url: str) -> None:
+    profile = ChaosProfile(
+        fault_type=FaultType.RATE_LIMIT_429,
+        trigger_on_call=1,
+        probability=0.0,
+        intercept_all_hosts=True,
+    )
+    with StreamChaosSandbox(profile) as sb, httpx.Client() as client:
+        resp = client.get(f"{live_url}/plain")
+        assert resp.status_code == 200
+        assert sb.telemetry.faults_injected == 0
+
+
+def test_stream_sandbox_probability_one_always_injects(live_url: str) -> None:
+    profile = ChaosProfile(
+        fault_type=FaultType.RATE_LIMIT_429,
+        trigger_on_call=1,
+        probability=1.0,
+        intercept_all_hosts=True,
+    )
+    with StreamChaosSandbox(profile) as sb, httpx.Client() as client:
+        resp = client.get(f"{live_url}/plain")
+        assert resp.status_code == 429
+        assert sb.telemetry.faults_injected == 1
+
+
+# --- Bug 10: period-1 cycle detection false-positived on a normal retry pattern ---
+
+
+def test_cycle_detection_does_not_flag_same_node_called_repeatedly() -> None:
+    auditor = StateGraphAuditor(max_steps=10, detect_cycles=True, raise_on_cycle=True)
+    auditor.record_step("plan")
+    for _ in range(5):
+        auditor.record_step("call_llm")
+    assert auditor.telemetry.cycle_detected is False

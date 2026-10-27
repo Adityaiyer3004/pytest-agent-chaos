@@ -30,7 +30,9 @@ json_values = st.recursive(
     max_leaves=10,
 )
 
-json_objects = st.dictionaries(st.text(min_size=1, max_size=10), json_values, min_size=1, max_size=6)
+json_objects = st.dictionaries(
+    st.text(min_size=1, max_size=10), json_values, min_size=1, max_size=6
+)
 
 
 def _sandbox(fault: FaultType) -> ChaosSandbox:

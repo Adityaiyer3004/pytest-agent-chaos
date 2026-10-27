@@ -71,6 +71,7 @@ import httpx
 import pytest
 from pytest_agent_chaos import FaultType, stream_chaos_inject
 
+
 @stream_chaos_inject(
     fault=FaultType.SSE_MIDSTREAM_DROP,
     trigger_on_call=1,
@@ -91,10 +92,12 @@ import pytest
 from pytest_agent_chaos import FaultType, chaos_inject
 from pytest_agent_chaos.interceptors.tool_corruptor import ChaosSandbox
 
+
 class ExtractInvoice(BaseModel):
     model_config = ConfigDict(extra="forbid")
     invoice_id: str
     total_amount: float
+
 
 @chaos_inject(
     fault=FaultType.TRUNCATED_JSON_TOOL_CALL,
@@ -121,6 +124,7 @@ def test_invoice_extractor_recovers_from_truncated_tool_json(chaos_sandbox: Chao
 import pytest
 from pytest_agent_chaos.exceptions import InfiniteAgentLoopError
 from pytest_agent_chaos.interceptors.state_graph import StateGraphAuditor
+
 
 def test_multi_agent_graph_loop_guardrail():
     auditor = StateGraphAuditor(max_steps=8, detect_cycles=True)
@@ -172,6 +176,7 @@ import pytest
 from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent
 from pytest_agent_chaos.sidecar.client import RemoteChaosClient
+
 
 def test_deployed_agent_recovers_from_network_chaos(chaos_sidecar: RemoteChaosClient):
     # 1. Program chaos rule via proxy control plane REST API
