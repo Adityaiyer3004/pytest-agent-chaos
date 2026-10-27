@@ -12,12 +12,34 @@ from pytest_agent_chaos.exceptions import InfiniteAgentLoopError
 from pytest_agent_chaos.models import GraphAuditTelemetry
 
 
+def _has_repeating_cycle(transitions: list[str]) -> bool:
+    """Detects any repeating node pattern of period 1..n//3 in the trailing transitions.
+
+    Requires 3 full repeats of the period before flagging, matching the confidence bar
+    of the original period-2-only check this replaces (e.g. [A, B, A, B, A, B]).
+    """
+    n = len(transitions)
+    for period in range(1, n // 3 + 1):
+        block = transitions[-period:]
+        if transitions[-2 * period : -period] == block and (
+            transitions[-3 * period : -2 * period] == block
+        ):
+            return True
+    return False
+
+
 class StateGraphAuditor:
     """Monitors state machine / LangGraph node transitions and enforces step ceilings."""
 
-    def __init__(self, max_steps: int = 10, detect_cycles: bool = True) -> None:
+    def __init__(
+        self,
+        max_steps: int = 10,
+        detect_cycles: bool = True,
+        raise_on_cycle: bool = False,
+    ) -> None:
         self.max_steps = max_steps
         self.detect_cycles = detect_cycles
+        self.raise_on_cycle = raise_on_cycle
         self.telemetry = GraphAuditTelemetry(max_steps_allowed=max_steps)
 
     def record_step(self, node_name: str) -> None:
@@ -27,7 +49,8 @@ class StateGraphAuditor:
             node_name: The name or identifier of the executed state graph node.
 
         Raises:
-            InfiniteAgentLoopError: If the step budget is exhausted.
+            InfiniteAgentLoopError: If the step budget is exhausted, or if a cyclic
+                deadlock pattern is detected and raise_on_cycle is True.
         """
         self.telemetry.step_count += 1
         self.telemetry.node_transitions.append(node_name)
@@ -41,11 +64,14 @@ class StateGraphAuditor:
                 f"Recent transition path: ... -> {path_str}"
             )
 
-        # Basic cycle detection (e.g., repeated node sequence [A, B, A, B, A, B])
-        if self.detect_cycles and len(self.telemetry.node_transitions) >= 6:
-            recent = self.telemetry.node_transitions[-6:]
-            if recent[0:2] == recent[2:4] == recent[4:6]:
-                self.telemetry.cycle_detected = True
+        if self.detect_cycles and _has_repeating_cycle(self.telemetry.node_transitions):
+            self.telemetry.cycle_detected = True
+            if self.raise_on_cycle:
+                path_str = " -> ".join(self.telemetry.node_transitions[-6:])
+                raise InfiniteAgentLoopError(
+                    f"Agent graph detected a cyclic deadlock pattern. "
+                    f"Recent transition path: ... -> {path_str}"
+                )
 
     def wrap_node(
         self, node_name: str, node_fn: Callable[..., Any] | None = None

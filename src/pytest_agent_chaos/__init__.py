@@ -22,11 +22,6 @@ from pytest_agent_chaos.models import (
     GraphAuditTelemetry,
 )
 from pytest_agent_chaos.plugin import chaos_inject, stream_chaos_inject
-from pytest_agent_chaos.proxy import (
-    ChaosProxyClient,
-    ChaosProxyRunner,
-    run_chaos_proxy,
-)
 from pytest_agent_chaos.sidecar import (
     ChaosSidecarServer,
     RemoteChaosClient,
@@ -40,8 +35,6 @@ __all__ = [
     "AgentLoopExhaustedError",
     "ChaosAsyncByteStream",
     "ChaosProfile",
-    "ChaosProxyClient",
-    "ChaosProxyRunner",
     "ChaosSandbox",
     "ChaosSidecarServer",
     "ChaosStreamDropError",
@@ -56,7 +49,6 @@ __all__ = [
     "StreamChaosSandbox",
     "UnhandledChaosFaultError",
     "chaos_inject",
-    "run_chaos_proxy",
     "run_chaos_sidecar",
     "stream_chaos_inject",
 ]

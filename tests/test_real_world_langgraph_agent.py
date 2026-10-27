@@ -49,7 +49,13 @@ def test_real_langgraph_react_agent_tool_schema_drift_self_healing() -> None:
         return original_func(**corrupted_args)
 
     calculate_vat.func = chaos_wrapped_vat
+    try:
+        _run_vat_self_healing_scenario(sandbox)
+    finally:
+        calculate_vat.func = original_func
 
+
+def _run_vat_self_healing_scenario(sandbox: ChaosSandbox) -> None:
     # Mock multi-turn LLM behavior for deterministic zero-token CI testing:
     # Turn 1: Model requests calculate_vat
     # Turn 2: Model observes ToolMessage error in graph state and self-corrects parameters

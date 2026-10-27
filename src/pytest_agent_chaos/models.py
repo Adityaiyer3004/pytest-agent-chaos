@@ -37,6 +37,15 @@ class ChaosProfile(BaseModel):
         le=1.0,
         description="Probability of fault triggering on the target call",
     )
+    seed: int | None = Field(
+        default=None,
+        description=(
+            "Seed for this sandbox's private RNG stream, used only when probability < 1.0. "
+            "Unset means the sandbox is seeded automatically (by pytest fixtures/decorators, "
+            "from --chaos-seed plus the test name) so results stay independent of which other "
+            "chaos tests ran before it and in what order."
+        ),
+    )
     trigger_on_call: int = Field(
         default=1, ge=1, description="1-indexed call occurrence when fault must inject"
     )

@@ -21,6 +21,34 @@ class ChaosSandbox:
     def __init__(self, profile: ChaosProfile) -> None:
         self.profile = profile
         self.telemetry = ChaosTelemetry(fault_type=profile.fault_type)
+        # Private RNG stream: probability draws must not depend on what other
+        # sandboxes have already pulled from the (shared, order-dependent) global random.
+        self._rng = random.Random(profile.seed)
+        # Top-level keys of the payload that was corrupted; None until a fault fires.
+        # An empty frozenset means the faulted payload was not a JSON object.
+        self._faulted_keys: frozenset[str] | None = None
+
+    @staticmethod
+    def _object_keys(raw: str) -> frozenset[str] | None:
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        return frozenset(parsed) if isinstance(parsed, dict) else frozenset()
+
+    def _is_recovery(self, raw_arguments: str) -> bool:
+        """A clean call is recovery only if it is well-formed JSON for the same tool call.
+
+        Same tool call = same top-level keys as the payload that was corrupted. This
+        checks structure, not schema validity; call record_recovery() when you have
+        stronger evidence (e.g. the tool executed successfully).
+        """
+        if self._faulted_keys is None:
+            return False
+        keys = self._object_keys(raw_arguments)
+        if keys is None:
+            return False
+        return not self._faulted_keys or keys == self._faulted_keys
 
     def mutate_tool_payload(self, raw_arguments: str) -> str:
         """Deterministically corrupts LLM tool-call JSON payloads to test parser recovery.
@@ -43,18 +71,18 @@ class ChaosSandbox:
 
         should_inject = (
             self.telemetry.total_calls_intercepted == self.profile.trigger_on_call
-            and random.random() <= self.profile.probability
+            and self._rng.random() <= self.profile.probability
         )
 
         if not should_inject:
-            # If a fault was injected previously and we receive a subsequent call,
-            # that means the agent recovered / retried!
-            if self.telemetry.faults_injected > 0:
+            if self._faulted_keys is not None:
                 self.telemetry.total_retries_observed += 1
-                self.telemetry.recovery_succeeded = True
+                if self._is_recovery(raw_arguments):
+                    self.telemetry.recovery_succeeded = True
             return raw_arguments
 
         self.telemetry.faults_injected += 1
+        self._faulted_keys = self._object_keys(raw_arguments) or frozenset()
 
         if self.profile.fault_type == FaultType.TRUNCATED_JSON_TOOL_CALL:
             # Slice off the closing braces/quotes to simulate max_tokens cutoff
@@ -64,10 +92,11 @@ class ChaosSandbox:
         if self.profile.fault_type == FaultType.SCHEMA_TYPE_DRIFT:
 
             def _drift_value(val: Any) -> Any:
-                if isinstance(val, (int, float)):
-                    return "CHAOS_INVALID_NUMBER_TYPE"
-                elif isinstance(val, bool):
+                # bool must be checked before int: bool is a subclass of int.
+                if isinstance(val, bool):
                     return ["unexpected", "array"]
+                elif isinstance(val, (int, float)):
+                    return "CHAOS_INVALID_NUMBER_TYPE"
                 elif isinstance(val, str):
                     return None
                 elif isinstance(val, list):
