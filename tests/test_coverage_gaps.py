@@ -36,7 +36,9 @@ def test_hallucinated_params_on_non_json_payload_appends_raw_suffix() -> None:
 
 
 def test_wrap_tool_mutates_single_string_argument() -> None:
-    sb = ChaosSandbox(ChaosProfile(fault_type=FaultType.TRUNCATED_JSON_TOOL_CALL, trigger_on_call=1))
+    sb = ChaosSandbox(
+        ChaosProfile(fault_type=FaultType.TRUNCATED_JSON_TOOL_CALL, trigger_on_call=1)
+    )
 
     def tool(raw_args: str) -> str:
         return raw_args
@@ -61,7 +63,9 @@ def test_wrap_tool_mutates_kwargs_and_restores_valid_json() -> None:
 
 
 def test_wrap_tool_passes_mutated_string_through_when_kwargs_become_invalid_json() -> None:
-    sb = ChaosSandbox(ChaosProfile(fault_type=FaultType.TRUNCATED_JSON_TOOL_CALL, trigger_on_call=1))
+    sb = ChaosSandbox(
+        ChaosProfile(fault_type=FaultType.TRUNCATED_JSON_TOOL_CALL, trigger_on_call=1)
+    )
     captured: list[tuple[object, ...]] = []
 
     def tool(*args: object, **kwargs: object) -> None:
@@ -75,7 +79,9 @@ def test_wrap_tool_passes_mutated_string_through_when_kwargs_become_invalid_json
 
 
 def test_wrap_tool_falls_through_when_no_args_or_kwargs() -> None:
-    sb = ChaosSandbox(ChaosProfile(fault_type=FaultType.TRUNCATED_JSON_TOOL_CALL, trigger_on_call=1))
+    sb = ChaosSandbox(
+        ChaosProfile(fault_type=FaultType.TRUNCATED_JSON_TOOL_CALL, trigger_on_call=1)
+    )
     calls = []
 
     def tool() -> str:
@@ -88,14 +94,18 @@ def test_wrap_tool_falls_through_when_no_args_or_kwargs() -> None:
 
 
 def test_record_recovery_sets_flag_explicitly() -> None:
-    sb = ChaosSandbox(ChaosProfile(fault_type=FaultType.TRUNCATED_JSON_TOOL_CALL, trigger_on_call=1))
+    sb = ChaosSandbox(
+        ChaosProfile(fault_type=FaultType.TRUNCATED_JSON_TOOL_CALL, trigger_on_call=1)
+    )
     assert sb.telemetry.recovery_succeeded is False
     sb.record_recovery()
     assert sb.telemetry.recovery_succeeded is True
 
 
 def test_is_recovery_rejects_malformed_json_after_a_fault() -> None:
-    sb = ChaosSandbox(ChaosProfile(fault_type=FaultType.TRUNCATED_JSON_TOOL_CALL, trigger_on_call=1))
+    sb = ChaosSandbox(
+        ChaosProfile(fault_type=FaultType.TRUNCATED_JSON_TOOL_CALL, trigger_on_call=1)
+    )
     sb.mutate_tool_payload('{"a": 1}')
     assert sb._is_recovery("not json at all") is False
 
@@ -144,10 +154,13 @@ async def test_wrap_async_node_direct_call_form_and_budget_enforced() -> None:
 
 
 def test_connection_timeout_fault_sync() -> None:
-    profile = ChaosProfile(fault_type=FaultType.CONNECTION_TIMEOUT, trigger_on_call=1, intercept_all_hosts=True)
-    with StreamChaosSandbox(profile) as sb, httpx.Client(transport=httpx.MockTransport(
-        lambda req: httpx.Response(200)
-    )) as client:
+    profile = ChaosProfile(
+        fault_type=FaultType.CONNECTION_TIMEOUT, trigger_on_call=1, intercept_all_hosts=True
+    )
+    with (
+        StreamChaosSandbox(profile) as sb,
+        httpx.Client(transport=httpx.MockTransport(lambda req: httpx.Response(200))) as client,
+    ):
         req = client.build_request("GET", "https://api.openai.com/v1/models")
         with pytest.raises(httpx.ConnectTimeout):
             client.send(req)
@@ -156,7 +169,9 @@ def test_connection_timeout_fault_sync() -> None:
 
 @pytest.mark.asyncio
 async def test_connection_timeout_fault_async() -> None:
-    profile = ChaosProfile(fault_type=FaultType.CONNECTION_TIMEOUT, trigger_on_call=1, intercept_all_hosts=True)
+    profile = ChaosProfile(
+        fault_type=FaultType.CONNECTION_TIMEOUT, trigger_on_call=1, intercept_all_hosts=True
+    )
     with StreamChaosSandbox(profile) as sb:
         async with httpx.AsyncClient(
             transport=httpx.MockTransport(lambda req: httpx.Response(200))
@@ -174,9 +189,12 @@ def test_latency_jitter_fault_sync_delays_but_returns_response() -> None:
         latency_ms=5,
         intercept_all_hosts=True,
     )
-    with StreamChaosSandbox(profile), httpx.Client(
-        transport=httpx.MockTransport(lambda req: httpx.Response(200, json={"ok": True}))
-    ) as client:
+    with (
+        StreamChaosSandbox(profile),
+        httpx.Client(
+            transport=httpx.MockTransport(lambda req: httpx.Response(200, json={"ok": True}))
+        ) as client,
+    ):
         req = client.build_request("GET", "https://api.openai.com/v1/models")
         resp = client.send(req)
         assert resp.status_code == 200
@@ -200,10 +218,15 @@ async def test_latency_jitter_fault_async_delays_but_returns_response() -> None:
 
 
 def test_non_target_host_passes_through_untouched() -> None:
-    profile = ChaosProfile(fault_type=FaultType.RATE_LIMIT_429, trigger_on_call=1)  # default target_domains
-    with StreamChaosSandbox(profile), httpx.Client(
-        transport=httpx.MockTransport(lambda req: httpx.Response(200, json={"ok": True}))
-    ) as client:
+    profile = ChaosProfile(
+        fault_type=FaultType.RATE_LIMIT_429, trigger_on_call=1
+    )  # default target_domains
+    with (
+        StreamChaosSandbox(profile),
+        httpx.Client(
+            transport=httpx.MockTransport(lambda req: httpx.Response(200, json={"ok": True}))
+        ) as client,
+    ):
         req = client.build_request("GET", "https://example.com/unrelated")
         resp = client.send(req)
         assert resp.status_code == 200
@@ -226,9 +249,7 @@ def test_stream_chaos_inject_decorator_applies_to_sync_test(
 
 
 def test_agent_chaos_fixture_creates_a_registered_sandbox(agent_chaos) -> None:  # type: ignore[no-untyped-def]
-    sb = agent_chaos(
-        ChaosProfile(fault_type=FaultType.TRUNCATED_JSON_TOOL_CALL, trigger_on_call=1)
-    )
+    sb = agent_chaos(ChaosProfile(fault_type=FaultType.TRUNCATED_JSON_TOOL_CALL, trigger_on_call=1))
     assert isinstance(sb, ChaosSandbox)
     mutated = sb.mutate_tool_payload('{"a": 1, "b": 2}')
     assert mutated != '{"a": 1, "b": 2}'
@@ -236,7 +257,9 @@ def test_agent_chaos_fixture_creates_a_registered_sandbox(agent_chaos) -> None: 
 
 def test_stream_chaos_fixture_creates_an_active_sandbox(stream_chaos) -> None:  # type: ignore[no-untyped-def]
     sb = stream_chaos(
-        ChaosProfile(fault_type=FaultType.RATE_LIMIT_429, trigger_on_call=1, intercept_all_hosts=True)
+        ChaosProfile(
+            fault_type=FaultType.RATE_LIMIT_429, trigger_on_call=1, intercept_all_hosts=True
+        )
     )
     assert isinstance(sb, StreamChaosSandbox)
     with httpx.Client(

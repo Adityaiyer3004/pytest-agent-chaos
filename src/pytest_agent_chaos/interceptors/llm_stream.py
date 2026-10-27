@@ -6,6 +6,7 @@ at the HTTP client level to simulate mid-stream SSE (Server-Sent Events) chunk d
 """
 
 import asyncio
+import random
 import threading
 import time
 import warnings
@@ -34,6 +35,7 @@ class ChaosSyncByteStream(httpx.SyncByteStream):
         latency_ms: int = 0,
         telemetry: ChaosTelemetry | None = None,
         drop_mid_chunk: bool = False,
+        on_drop: Callable[[], None] | None = None,
     ) -> None:
         self._original_stream = original_stream
         self._drop_after_chunks = drop_after_chunks
@@ -42,6 +44,7 @@ class ChaosSyncByteStream(httpx.SyncByteStream):
         self._chunks_yielded = 0
         self._telemetry = telemetry
         self._drop_mid_chunk = drop_mid_chunk
+        self._on_drop = on_drop
 
     def __iter__(self) -> Iterator[bytes]:
         for chunk in self._original_stream:
@@ -55,6 +58,8 @@ class ChaosSyncByteStream(httpx.SyncByteStream):
                     yield chunk[:half]
                 if self._telemetry:
                     self._telemetry.faults_injected += 1
+                if self._on_drop:
+                    self._on_drop()
                 raise httpx.RemoteProtocolError(
                     "pytest-agent-chaos: Peer connection closed unexpectedly mid-stream."
                 )
@@ -77,6 +82,7 @@ class ChaosAsyncByteStream(httpx.AsyncByteStream):
         latency_ms: int = 0,
         telemetry: ChaosTelemetry | None = None,
         drop_mid_chunk: bool = False,
+        on_drop: Callable[[], None] | None = None,
     ) -> None:
         self._original_stream = original_stream
         self._drop_after_chunks = drop_after_chunks
@@ -85,6 +91,7 @@ class ChaosAsyncByteStream(httpx.AsyncByteStream):
         self._chunks_yielded = 0
         self._telemetry = telemetry
         self._drop_mid_chunk = drop_mid_chunk
+        self._on_drop = on_drop
 
     async def __aiter__(self) -> AsyncIterator[bytes]:
         async for chunk in self._original_stream:
@@ -98,6 +105,8 @@ class ChaosAsyncByteStream(httpx.AsyncByteStream):
                     yield chunk[:half]
                 if self._telemetry:
                     self._telemetry.faults_injected += 1
+                if self._on_drop:
+                    self._on_drop()
                 raise httpx.RemoteProtocolError(
                     "pytest-agent-chaos: Peer connection closed unexpectedly mid-stream."
                 )
@@ -115,6 +124,9 @@ class StreamChaosSandbox:
     def __init__(self, profile: ChaosProfile) -> None:
         self.profile = profile
         self.telemetry = ChaosTelemetry(fault_type=profile.fault_type)
+        # Private RNG stream, mirroring ChaosSandbox: probability draws must not
+        # depend on what other sandboxes have already pulled from global random.
+        self._rng = random.Random(profile.seed)
         self._original_sync_send: Callable[..., Any] | None = None
         self._original_async_send: Callable[..., Any] | None = None
         self._patched_sync_send: Callable[..., Any] | None = None
@@ -151,9 +163,13 @@ class StreamChaosSandbox:
         """Determines if a fault should inject on the current call occurrence."""
         call_num = self.telemetry.total_calls_intercepted
         if self.profile.fault_schedule and call_num in self.profile.fault_schedule:
-            return self.profile.fault_schedule[call_num]
-        if call_num == self.profile.trigger_on_call:
-            return self.profile.fault_type
+            candidate = self.profile.fault_schedule[call_num]
+        elif call_num == self.profile.trigger_on_call:
+            candidate = self.profile.fault_type
+        else:
+            return None
+        if self._rng.random() <= self.profile.probability:
+            return candidate
         return None
 
     def _generate_429_response(self, request: httpx.Request) -> httpx.Response:
@@ -238,7 +254,9 @@ class StreamChaosSandbox:
         response = cast(
             httpx.Response, self._original_sync_send(client, request, *args, **send_kwargs)
         )
-        self._note_fault(request)
+        # Only mark this endpoint as faulted if the drop actually fires -- if the
+        # response has fewer chunks than drop_after_chunks, nothing is ever dropped,
+        # and the endpoint must not look "faulted" to the next call's recovery check.
         response.stream = ChaosSyncByteStream(
             original_stream=cast(Iterator[bytes], response.stream),
             drop_after_chunks=self.profile.drop_after_chunks,
@@ -246,6 +264,7 @@ class StreamChaosSandbox:
             latency_ms=self.profile.latency_ms,
             telemetry=self.telemetry,
             drop_mid_chunk=self.profile.drop_mid_chunk,
+            on_drop=lambda: self._note_fault(request),
         )
         if not caller_streams:
             # A non-streaming caller expects send() to return a fully read body.
@@ -313,7 +332,7 @@ class StreamChaosSandbox:
             httpx.Response,
             await self._original_async_send(client, request, *args, **send_kwargs),
         )
-        self._note_fault(request)
+        # See the sync path above: only mark faulted if the drop actually fires.
         response.stream = ChaosAsyncByteStream(
             original_stream=cast(AsyncIterator[bytes], response.stream),
             drop_after_chunks=self.profile.drop_after_chunks,
@@ -321,6 +340,7 @@ class StreamChaosSandbox:
             latency_ms=self.profile.latency_ms,
             telemetry=self.telemetry,
             drop_mid_chunk=self.profile.drop_mid_chunk,
+            on_drop=lambda: self._note_fault(request),
         )
         if not caller_streams:
             try:
@@ -351,7 +371,10 @@ class StreamChaosSandbox:
                     return sandbox.intercept_sync_send(client_self, request, *args, **kwargs)
 
                 async def patched_async_send(
-                    client_self: httpx.AsyncClient, request: httpx.Request, *args: Any, **kwargs: Any
+                    client_self: httpx.AsyncClient,
+                    request: httpx.Request,
+                    *args: Any,
+                    **kwargs: Any,
                 ) -> httpx.Response:
                     return await sandbox.intercept_async_send(client_self, request, *args, **kwargs)
 
