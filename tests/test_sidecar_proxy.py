@@ -181,9 +181,15 @@ def test_sidecar_mid_stream_sse_socket_sever(
     )
 
     with httpx.Client(base_url=proxy_sidecar.base_url) as client:
-        # Turn 1: Stream severed mid-flight over live TCP socket
-        with client.stream("POST", "/v1/chat/completions", json={"stream": True}) as resp1:
-            severed_content = b"".join(resp1.iter_bytes())
+        # Turn 1: Stream severed mid-flight over live TCP socket. The connection is
+        # aborted (not cleanly ended), so the client sees a genuine transport error.
+        severed_content = b""
+        with (
+            pytest.raises(httpx.RemoteProtocolError),
+            client.stream("POST", "/v1/chat/completions", json={"stream": True}) as resp1,
+        ):
+            for chunk in resp1.iter_bytes():
+                severed_content += chunk
 
         # Proves mid-token truncation occurred over network: contains "Hello" and severed '{"conte'
         assert b"Hello" in severed_content
