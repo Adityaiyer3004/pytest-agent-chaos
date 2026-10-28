@@ -25,7 +25,7 @@ from pytest_agent_chaos.models import (
 )
 from pytest_agent_chaos.plugin import chaos_inject, stream_chaos_inject
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 # The sidecar (fastapi/uvicorn) is an optional extra (`pip install
 # pytest-agent-chaos[sidecar]`), not a core dependency. Importing it eagerly here
@@ -49,7 +49,6 @@ __all__ = [
     "ChaosAsyncByteStream",
     "ChaosProfile",
     "ChaosSandbox",
-    "ChaosSidecarServer",
     "ChaosStreamDropError",
     "ChaosSyncByteStream",
     "ChaosTelemetry",
@@ -57,11 +56,9 @@ __all__ = [
     "FaultType",
     "GraphAuditTelemetry",
     "InfiniteAgentLoopError",
-    "RemoteChaosClient",
     "StateGraphAuditor",
     "StreamChaosSandbox",
     "UnhandledChaosFaultError",
     "chaos_inject",
-    "run_chaos_sidecar",
     "stream_chaos_inject",
 ]

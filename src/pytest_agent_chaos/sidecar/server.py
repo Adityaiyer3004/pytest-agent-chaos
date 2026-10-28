@@ -26,9 +26,11 @@ def create_sidecar_app(default_upstream: str = "https://api.openai.com") -> Fast
         "retries_observed": 0,
         "recovery_succeeded": False,
     }
-    # Paths that have received an injected fault; recovery requires a later,
-    # successful call to one of these, not just "any later call" (see _is_recovery).
-    faulted_paths: set[str] = set()
+    # (method, path) pairs that have received an injected fault; recovery requires a
+    # later, successful call to the same endpoint, not just "any later call" -- and
+    # not an unrelated method on the same path (matches the in-process sandbox's
+    # (method, host, path) endpoint key in interceptors/llm_stream.py).
+    faulted_paths: set[tuple[str, str]] = set()
 
     # --------------------------------------------------------------------------
     # Control Plane Endpoints (/_chaos/v1/...)
@@ -80,6 +82,7 @@ def create_sidecar_app(default_upstream: str = "https://api.openai.com") -> Fast
         if path.startswith("_chaos/v1"):
             return JSONResponse({"error": "Not Found"}, status_code=404)
 
+        endpoint = (request.method, path)
         telemetry["total_calls"] += 1
         call_idx = telemetry["total_calls"]
 
@@ -95,7 +98,7 @@ def create_sidecar_app(default_upstream: str = "https://api.openai.com") -> Fast
             "FaultType.RATE_LIMIT_429",
         ):
             telemetry["faults_injected"] += 1
-            faulted_paths.add(path)
+            faulted_paths.add(endpoint)
             retry_after = str(active_rule.get("retry_after", 1))
             return Response(
                 status_code=429,
@@ -116,7 +119,7 @@ def create_sidecar_app(default_upstream: str = "https://api.openai.com") -> Fast
             "FaultType.GATEWAY_TIMEOUT_504",
         ):
             telemetry["faults_injected"] += 1
-            faulted_paths.add(path)
+            faulted_paths.add(endpoint)
             return Response(
                 status_code=504,
                 headers={"Content-Type": "application/json"},
@@ -167,7 +170,7 @@ def create_sidecar_app(default_upstream: str = "https://api.openai.com") -> Fast
             # Recovery requires evidence: this path previously received a fault,
             # this call wasn't itself a fault, and the upstream call succeeded.
             # "Some later call happened" is not evidence on its own.
-            if path in faulted_paths and not active_rule:
+            if endpoint in faulted_paths and not active_rule:
                 telemetry["retries_observed"] += 1
                 if 200 <= upstream_resp.status_code < 300:
                     telemetry["recovery_succeeded"] = True
@@ -179,7 +182,7 @@ def create_sidecar_app(default_upstream: str = "https://api.openai.com") -> Fast
                         chunk_count += 1
                         if is_stream_drop and chunk_count > drop_after:
                             telemetry["faults_injected"] += 1
-                            faulted_paths.add(path)
+                            faulted_paths.add(endpoint)
                             if drop_mid_chunk and len(chunk) > 1:
                                 yield chunk[: max(1, len(chunk) // 2)]
                             # Raise (not `return`) so uvicorn aborts the connection mid-body:
