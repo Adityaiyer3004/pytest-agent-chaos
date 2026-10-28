@@ -12,7 +12,7 @@ from collections.abc import Callable
 from typing import Any
 
 from pytest_agent_chaos.exceptions import AgentLoopExhaustedError
-from pytest_agent_chaos.models import ChaosProfile, ChaosTelemetry, FaultType
+from pytest_agent_chaos.models import DEFAULT_SEED, ChaosProfile, ChaosTelemetry, FaultType
 
 
 class ChaosSandbox:
@@ -23,7 +23,8 @@ class ChaosSandbox:
         self.telemetry = ChaosTelemetry(fault_type=profile.fault_type)
         # Private RNG stream: probability draws must not depend on what other
         # sandboxes have already pulled from the (shared, order-dependent) global random.
-        self._rng = random.Random(profile.seed)
+        # Falls back to DEFAULT_SEED (not OS entropy) if the profile wasn't seeded.
+        self._rng = random.Random(profile.seed if profile.seed is not None else DEFAULT_SEED)
         # Top-level keys of the payload that was corrupted; None until a fault fires.
         # An empty frozenset means the faulted payload was not a JSON object.
         self._faulted_keys: frozenset[str] | None = None

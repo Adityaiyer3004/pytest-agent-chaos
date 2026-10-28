@@ -30,6 +30,10 @@ jobs:
         run: |
           ruff check .
 
+      - name: Run Ruff Format Check
+        run: |
+          ruff format --check .
+
       - name: Run Mypy Type Check
         run: |
           mypy src
