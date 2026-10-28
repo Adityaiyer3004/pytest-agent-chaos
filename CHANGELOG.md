@@ -9,6 +9,17 @@ project adheres to [Semantic Versioning](https://semver.org/) once it reaches
 
 ### Fixed
 
+- **A plain `pip install pytest-agent-chaos` broke the plugin entirely.**
+  `pytest_agent_chaos/__init__.py` unconditionally imported the sidecar
+  module, which imports `fastapi`/`uvicorn` — declared only in the
+  `dev`/`sidecar` extras, not core dependencies. Since pytest's `pytest11`
+  entry point loads this package on every test run, that `ImportError` was
+  fatal to every test, not just to sidecar usage. Found by building the
+  wheel and installing it into a clean venv to actually try it. The sidecar
+  exports (`ChaosSidecarServer`, `RemoteChaosClient`, `run_chaos_sidecar`)
+  are now loaded lazily via a module `__getattr__`, matching how the
+  `chaos_sidecar` fixture and the README's own sidecar example already
+  import it.
 - **SSE drop marked the endpoint "faulted" before confirming the drop fired.**
   If `drop_after_chunks` exceeded the real chunk count, nothing ever dropped
   (`faults_injected` stayed `0`), but the next successful call to that
