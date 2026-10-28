@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/) once it reaches
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-28
+
 ### Fixed
 
 - **The terminal "Chaos Resilience Index" ignored `recovery_succeeded` and
@@ -152,4 +154,5 @@ project adheres to [Semantic Versioning](https://semver.org/) once it reaches
   `ruff format --check`, and runs against the exact dependency floors declared
   in `pyproject.toml`, across Python 3.10–3.14.
 
-[Unreleased]: https://github.com/Adityaiyer3004/pytest-agent-chaos/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Adityaiyer3004/pytest-agent-chaos/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/Adityaiyer3004/pytest-agent-chaos/compare/v0.1.0...v0.1.1
