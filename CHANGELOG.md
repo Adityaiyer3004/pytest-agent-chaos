@@ -9,6 +9,26 @@ project adheres to [Semantic Versioning](https://semver.org/) once it reaches
 
 ### Fixed
 
+- **The terminal "Chaos Resilience Index" ignored `recovery_succeeded` and
+  recomputed its own, broken definition of "recovered."** The reporting
+  layer marked a test `RECOVERED` whenever `faults_injected > 0 and
+  total_retries_observed > 0` — true for any retry attempt, regardless of
+  whether it actually succeeded — `or`-ed with the correct
+  `recovery_succeeded`. This is the exact headline-metric bug from the
+  original review (an agent that retries and fails anyway was reported as
+  recovered, with a 100% Resilience Index), still present because this file
+  was never touched while fixing `recovery_succeeded` itself in the
+  sandboxes and sidecar. Now reports `RECOVERED` only when
+  `recovery_succeeded` is actually `True`.
+- **The sidecar's SSE-drop fault had the same premature-fault-marking bug
+  already fixed in the in-process `StreamChaosSandbox` (see below), just
+  never ported here.** `faulted_paths.add(path)` ran as soon as the active
+  rule for a call was an SSE-drop rule, before the streaming generator had
+  confirmed the drop would actually fire. If the upstream response had fewer
+  chunks than `drop_after_chunks`, nothing dropped, but the next successful
+  call to that path was still recorded as a recovery. The mark now happens
+  only where `faults_injected` is incremented, inside the generator, at the
+  point the drop actually occurs.
 - **A plain `pip install pytest-agent-chaos` broke the plugin entirely.**
   `pytest_agent_chaos/__init__.py` unconditionally imported the sidecar
   module, which imports `fastapi`/`uvicorn` — declared only in the
