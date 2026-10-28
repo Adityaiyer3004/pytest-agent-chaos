@@ -71,6 +71,7 @@ import httpx
 import pytest
 from pytest_agent_chaos import FaultType, stream_chaos_inject
 
+
 @stream_chaos_inject(
     fault=FaultType.SSE_MIDSTREAM_DROP,
     trigger_on_call=1,
@@ -91,10 +92,12 @@ import pytest
 from pytest_agent_chaos import FaultType, chaos_inject
 from pytest_agent_chaos.interceptors.tool_corruptor import ChaosSandbox
 
+
 class ExtractInvoice(BaseModel):
     model_config = ConfigDict(extra="forbid")
     invoice_id: str
     total_amount: float
+
 
 @chaos_inject(
     fault=FaultType.TRUNCATED_JSON_TOOL_CALL,
@@ -121,6 +124,7 @@ def test_invoice_extractor_recovers_from_truncated_tool_json(chaos_sandbox: Chao
 import pytest
 from pytest_agent_chaos.exceptions import InfiniteAgentLoopError
 from pytest_agent_chaos.interceptors.state_graph import StateGraphAuditor
+
 
 def test_multi_agent_graph_loop_guardrail():
     auditor = StateGraphAuditor(max_steps=8, detect_cycles=True)
@@ -172,6 +176,7 @@ import pytest
 from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent
 from pytest_agent_chaos.sidecar.client import RemoteChaosClient
+
 
 def test_deployed_agent_recovers_from_network_chaos(chaos_sidecar: RemoteChaosClient):
     # 1. Program chaos rule via proxy control plane REST API
@@ -258,6 +263,21 @@ Chaos Resilience Index: 100.0% | Injected Faults Handled: 3/3 | Total Calls Inte
 
 ---
 
+## 📌 Versioning
+
+This project is pre-1.0 (`0.x`) and the API is still settling — expect breaking
+changes between minor versions until 1.0. The public surface is exactly what
+`pytest_agent_chaos.__all__` exports: the pytest fixtures and decorators, the
+sandbox classes (`ChaosSandbox`, `StreamChaosSandbox`), `FaultType` /
+`ChaosProfile` / telemetry models, the exception hierarchy, and the sidecar
+client/server entry points (`RemoteChaosClient`, `ChaosSidecarServer`,
+`run_chaos_sidecar`). Anything reached only via `pytest_agent_chaos.interceptors.*`
+or `pytest_agent_chaos.sidecar.server` internals, or prefixed with `_`, is not
+part of the contract and can change without notice. See `CHANGELOG.md` for
+what changed between releases.
+
+---
+
 ## 🧪 Development & Testing
 
 ```bash
@@ -270,7 +290,19 @@ pip install -e ".[dev]"
 
 # Run test suite
 pytest
+
+# Run under parallel workers (checks the suite is pytest-xdist safe)
+pytest -n auto
+
+# Run with a coverage gate (see [tool.coverage.report] in pyproject.toml)
+coverage run --source=src -m pytest
+coverage report -m
 ```
+
+CI runs the full suite across Python 3.10–3.14, re-runs it under `pytest -n auto`,
+enforces the coverage gate, and separately installs the exact floor versions
+declared in `pyproject.toml` to catch dependency ranges that look fine on paper
+but don't actually resolve or work together.
 
 ---
 

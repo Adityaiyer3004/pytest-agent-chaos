@@ -4,9 +4,9 @@ services:
   chaos-proxy:
     build:
       context: .
-      dockerfile: Dockerfile.proxy
+      dockerfile: Dockerfile.sidecar
     ports:
-      - "8080:8080"  # Intercepted traffic and control plane port
+      - "8085:8085"  # Intercepted traffic and control plane port
     networks:
       - agent-mesh
 
@@ -22,7 +22,7 @@ services:
       context: ./agent_app
       dockerfile: Dockerfile
     environment:
-      - OPENAI_BASE_URL=http://chaos-proxy:8080/v1
+      - OPENAI_BASE_URL=http://chaos-proxy:8085/v1
       - REDIS_URL=redis://redis-checkpointer:6379/0
       - PORT=8000
     ports:
