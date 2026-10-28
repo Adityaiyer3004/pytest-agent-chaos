@@ -245,6 +245,8 @@ class StreamChaosSandbox:
 
         if active_fault == FaultType.LATENCY_JITTER and self.profile.latency_ms > 0:
             time.sleep(self.profile.latency_ms / 1000.0)
+            self.telemetry.faults_injected += 1
+            self._note_fault(request)
 
         if active_fault != FaultType.SSE_MIDSTREAM_DROP:
             return cast(httpx.Response, self._original_sync_send(client, request, *args, **kwargs))
@@ -320,6 +322,8 @@ class StreamChaosSandbox:
 
         if active_fault == FaultType.LATENCY_JITTER and self.profile.latency_ms > 0:
             await asyncio.sleep(self.profile.latency_ms / 1000.0)
+            self.telemetry.faults_injected += 1
+            self._note_fault(request)
 
         if active_fault != FaultType.SSE_MIDSTREAM_DROP:
             return cast(
