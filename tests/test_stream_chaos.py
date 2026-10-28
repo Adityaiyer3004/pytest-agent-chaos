@@ -123,7 +123,7 @@ def test_sse_midstream_drop_sync():
         req = client.build_request("POST", "https://api.openai.com/v1/chat/completions")
 
         # Attempt 1: Should yield 2 chunks and then raise httpx.RemoteProtocolError
-        resp1 = client.send(req)
+        resp1 = client.send(req, stream=True)
         received_tokens = []
         with pytest.raises(httpx.RemoteProtocolError):
             for chunk in resp1.iter_bytes():
@@ -133,7 +133,7 @@ def test_sse_midstream_drop_sync():
         assert sandbox.telemetry.faults_injected == 1
 
         # Resilient agent fallback/retry logic (Attempt 2 passes cleanly)
-        resp2 = client.send(req)
+        resp2 = client.send(req, stream=True)
         recovered_tokens = list(resp2.iter_bytes())
         assert len(recovered_tokens) == 4
         assert sandbox.telemetry.recovery_succeeded
@@ -166,7 +166,7 @@ async def test_sse_midstream_drop_async():
         async with httpx.AsyncClient(transport=httpx.MockTransport(async_handler)) as client:
             req = client.build_request("POST", "https://api.anthropic.com/v1/messages")
 
-            resp1 = await client.send(req)
+            resp1 = await client.send(req, stream=True)
             chunks = []
             with pytest.raises(httpx.RemoteProtocolError):
                 async for chunk in resp1.aiter_bytes():
@@ -176,7 +176,7 @@ async def test_sse_midstream_drop_async():
             assert sandbox.telemetry.faults_injected == 1
 
             # Retry
-            resp2 = await client.send(req)
+            resp2 = await client.send(req, stream=True)
             success_chunks = []
             async for chunk in resp2.aiter_bytes():
                 success_chunks.append(chunk)

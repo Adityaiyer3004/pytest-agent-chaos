@@ -56,7 +56,7 @@ def test_production_stress_mid_token_sse_disconnect() -> None:
         req = client.build_request("POST", "https://api.openai.com/v1/chat/completions")
 
         # Turn 1: Client streams tokens, but chunk 2 is sliced mid-word and socket drops
-        resp1 = client.send(req)
+        resp1 = client.send(req, stream=True)
         received_bytes: list[bytes] = []
 
         with pytest.raises(httpx.RemoteProtocolError):
@@ -71,7 +71,7 @@ def test_production_stress_mid_token_sse_disconnect() -> None:
         assert sandbox.telemetry.faults_injected == 1
 
         # Resilient agent fallback: Re-opens stream on Turn 2 and receives all 3 chunks intact
-        resp2 = client.send(req)
+        resp2 = client.send(req, stream=True)
         clean_chunks = list(resp2.iter_bytes())
 
         assert len(clean_chunks) == 3

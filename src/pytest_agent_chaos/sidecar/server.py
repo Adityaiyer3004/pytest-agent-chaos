@@ -12,6 +12,8 @@ import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from pytest_agent_chaos.exceptions import ChaosStreamDropError
+
 
 def create_sidecar_app(default_upstream: str = "https://api.openai.com") -> FastAPI:
     """Creates a FastAPI application configured as an L7 Chaos Proxy with control plane APIs."""
@@ -24,6 +26,9 @@ def create_sidecar_app(default_upstream: str = "https://api.openai.com") -> Fast
         "retries_observed": 0,
         "recovery_succeeded": False,
     }
+    # Paths that have received an injected fault; recovery requires a later,
+    # successful call to one of these, not just "any later call" (see _is_recovery).
+    faulted_paths: set[str] = set()
 
     # --------------------------------------------------------------------------
     # Control Plane Endpoints (/_chaos/v1/...)
@@ -54,6 +59,7 @@ def create_sidecar_app(default_upstream: str = "https://api.openai.com") -> Fast
     async def clear_rules() -> dict[str, str]:
         """Resets proxy to transparent pass-through mode and clears telemetry."""
         active_rules.clear()
+        faulted_paths.clear()
         telemetry["total_calls"] = 0
         telemetry["faults_injected"] = 0
         telemetry["retries_observed"] = 0
@@ -89,6 +95,7 @@ def create_sidecar_app(default_upstream: str = "https://api.openai.com") -> Fast
             "FaultType.RATE_LIMIT_429",
         ):
             telemetry["faults_injected"] += 1
+            faulted_paths.add(path)
             retry_after = str(active_rule.get("retry_after", 1))
             return Response(
                 status_code=429,
@@ -109,6 +116,7 @@ def create_sidecar_app(default_upstream: str = "https://api.openai.com") -> Fast
             "FaultType.GATEWAY_TIMEOUT_504",
         ):
             telemetry["faults_injected"] += 1
+            faulted_paths.add(path)
             return Response(
                 status_code=504,
                 headers={"Content-Type": "application/json"},
@@ -143,19 +151,24 @@ def create_sidecar_app(default_upstream: str = "https://api.openai.com") -> Fast
             )
             upstream_resp = await client.send(upstream_req, stream=True)
 
-            # Mark recovery if previous call had injected faults
-            if telemetry["faults_injected"] > 0 and not active_rule:
-                telemetry["retries_observed"] += 1
-                telemetry["recovery_succeeded"] = True
-
             # 4. Fault: Mid-Stream SSE Disconnect / Slicing
             is_stream_drop = active_rule and active_rule.get("fault_type") in (
                 "sse_midstream_drop",
                 "drop_mid_stream",
                 "FaultType.SSE_MIDSTREAM_DROP",
             )
+            if is_stream_drop:
+                faulted_paths.add(path)
             drop_after = active_rule.get("drop_after_chunks", 1) if active_rule else 1
             drop_mid_chunk = active_rule.get("drop_mid_chunk", False) if active_rule else False
+
+            # Recovery requires evidence: this path previously received a fault,
+            # this call wasn't itself a fault, and the upstream call succeeded.
+            # "Some later call happened" is not evidence on its own.
+            if path in faulted_paths and not active_rule:
+                telemetry["retries_observed"] += 1
+                if 200 <= upstream_resp.status_code < 300:
+                    telemetry["recovery_succeeded"] = True
 
             async def chaos_stream_generator() -> AsyncGenerator[bytes, None]:
                 chunk_count = 0
@@ -166,9 +179,13 @@ def create_sidecar_app(default_upstream: str = "https://api.openai.com") -> Fast
                             telemetry["faults_injected"] += 1
                             if drop_mid_chunk and len(chunk) > 1:
                                 yield chunk[: max(1, len(chunk) // 2)]
-                            await upstream_resp.aclose()
-                            await client.aclose()
-                            return  # Sever connection abruptly without ending stream
+                            # Raise (not `return`) so uvicorn aborts the connection mid-body:
+                            # a clean `return` lets Starlette finish the HTTP response
+                            # normally, which downstream clients see as a complete (if
+                            # short) response rather than a severed connection.
+                            raise ChaosStreamDropError(
+                                "pytest-agent-chaos sidecar: severed connection mid-stream"
+                            )
                         yield chunk
                 finally:
                     await upstream_resp.aclose()
@@ -187,3 +204,27 @@ def create_sidecar_app(default_upstream: str = "https://api.openai.com") -> Fast
             raise
 
     return app
+
+
+def main() -> None:
+    """CLI entrypoint for running the chaos sidecar as a standalone process."""
+    import argparse
+
+    import uvicorn
+
+    parser = argparse.ArgumentParser(description="pytest-agent-chaos sidecar server")
+    parser.add_argument("--port", type=int, default=8085, help="Port to listen on (default 8085)")
+    parser.add_argument(
+        "--host", type=str, default="0.0.0.0", help="Host interface (default 0.0.0.0)"
+    )
+    parser.add_argument(
+        "--upstream", type=str, default="https://api.openai.com", help="Upstream API base URL"
+    )
+    args = parser.parse_args()
+
+    app = create_sidecar_app(default_upstream=args.upstream)
+    uvicorn.run(app, host=args.host, port=args.port)
+
+
+if __name__ == "__main__":
+    main()

@@ -5,7 +5,8 @@ fixtures (agent_chaos, stream_chaos, graph_auditor), and decorators (chaos_injec
 """
 
 import functools
-import random
+import inspect
+import zlib
 from collections.abc import Callable, Generator
 from typing import Any
 
@@ -40,11 +41,33 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
 
 
+_BASE_SEED: int = 42
+
+
+def _derive_seed(name: str) -> int:
+    """Derives a per-test seed from --chaos-seed and the test/node name.
+
+    Using crc32 (not the builtin hash()) keeps this stable across interpreter
+    runs regardless of PYTHONHASHSEED. Each sandbox gets its own RNG stream
+    from this, so probability-based firing no longer depends on which other
+    chaos tests ran first and how many random draws they made.
+    """
+    return _BASE_SEED ^ zlib.crc32(name.encode())
+
+
+def _seeded(profile: ChaosProfile, name: str) -> ChaosProfile:
+    """Returns profile with an automatic seed, unless the caller already set one."""
+    if profile.seed is not None:
+        return profile
+    return profile.model_copy(update={"seed": _derive_seed(name)})
+
+
 def pytest_configure(config: pytest.Config) -> None:
     """Initializes deterministic seeds and registers markers."""
+    global _BASE_SEED
     seed = config.getoption("--chaos-seed", default=42)
     if seed is not None:
-        random.seed(seed)
+        _BASE_SEED = seed
 
     config.addinivalue_line(
         "markers",
@@ -74,7 +97,7 @@ def agent_chaos(
     sandboxes: list[ChaosSandbox] = []
 
     def _create_sandbox(profile: ChaosProfile) -> ChaosSandbox:
-        sb = ChaosSandbox(profile)
+        sb = ChaosSandbox(_seeded(profile, request.node.name))
         sb.telemetry.test_name = request.node.name
         GLOBAL_CHAOS_REGISTRY.register(sb.telemetry)
         sandboxes.append(sb)
@@ -91,7 +114,7 @@ def stream_chaos(
     active_sandboxes: list[StreamChaosSandbox] = []
 
     def _create_stream_sandbox(profile: ChaosProfile) -> StreamChaosSandbox:
-        sandbox = StreamChaosSandbox(profile)
+        sandbox = StreamChaosSandbox(_seeded(profile, request.node.name))
         sandbox.telemetry.test_name = request.node.name
         GLOBAL_CHAOS_REGISTRY.register(sandbox.telemetry)
         active_sandboxes.append(sandbox)
@@ -100,7 +123,10 @@ def stream_chaos(
 
     yield _create_stream_sandbox
 
-    for sb in active_sandboxes:
+    # Exit in reverse (LIFO) order: each sandbox's __exit__ only restores the
+    # monkeypatch if it's still the one currently installed, so exiting in
+    # creation order would leave the last-entered sandbox's patch stranded.
+    for sb in reversed(active_sandboxes):
         sb.__exit__(None, None, None)
 
 
@@ -155,45 +181,6 @@ def chaos_sidecar(
         srv.stop()
 
 
-@pytest.fixture
-def chaos_proxy(
-    request: pytest.FixtureRequest,
-) -> Generator[Any, None, None]:
-    """Pytest fixture providing an isolated ChaosProxyClient to control the sidecar proxy."""
-    import httpx
-
-    from pytest_agent_chaos.proxy.client import ChaosProxyClient
-    from pytest_agent_chaos.proxy.runner import ChaosProxyRunner
-
-    client = ChaosProxyClient("http://localhost:8080")
-    runner: ChaosProxyRunner | None = None
-    if not client.is_healthy():
-        try:
-            runner = ChaosProxyRunner(port=8080)
-            runner.start(timeout=3.0)
-            client = ChaosProxyClient(runner.base_url)
-        except (OSError, TimeoutError, RuntimeError):
-            runner = ChaosProxyRunner(port=None)
-            runner.start(timeout=3.0)
-            client = ChaosProxyClient(runner.base_url)
-
-    try:
-        client.reset()
-    except (httpx.HTTPError, OSError):
-        pass
-
-    yield client
-
-    try:
-        client.reset()
-    except (httpx.HTTPError, OSError):
-        pass
-    client.close()
-
-    if runner:
-        runner.stop()
-
-
 def chaos_inject(
     fault: FaultType,
     trigger_on_call: int = 1,
@@ -203,18 +190,30 @@ def chaos_inject(
     """Decorator to inject deterministic tool corruption into an agent test case."""
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
-        @functools.wraps(func)
-        def wrapper(*args: Any, **kwargs: Any) -> Any:
+        def _make_sandbox() -> ChaosSandbox:
             profile = ChaosProfile(
                 fault_type=fault,
                 trigger_on_call=trigger_on_call,
                 max_graph_steps=max_graph_steps,
                 probability=probability,
             )
-            sandbox = ChaosSandbox(profile)
+            sandbox = ChaosSandbox(_seeded(profile, func.__name__))
             sandbox.telemetry.test_name = func.__name__
             GLOBAL_CHAOS_REGISTRY.register(sandbox.telemetry)
-            kwargs["chaos_sandbox"] = sandbox
+            return sandbox
+
+        if inspect.iscoroutinefunction(func):
+
+            @functools.wraps(func)
+            async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+                kwargs["chaos_sandbox"] = _make_sandbox()
+                return await func(*args, **kwargs)
+
+            return async_wrapper
+
+        @functools.wraps(func)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            kwargs["chaos_sandbox"] = _make_sandbox()
             return func(*args, **kwargs)
 
         return wrapper
@@ -232,8 +231,7 @@ def stream_chaos_inject(
     """Decorator to inject transport stream drops or rate limits into an agent test case."""
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
-        @functools.wraps(func)
-        def wrapper(*args: Any, **kwargs: Any) -> Any:
+        def _make_sandbox() -> StreamChaosSandbox:
             profile = ChaosProfile(
                 fault_type=fault,
                 trigger_on_call=trigger_on_call,
@@ -241,9 +239,25 @@ def stream_chaos_inject(
                 retry_after_seconds=retry_after_seconds,
                 intercept_all_hosts=intercept_all_hosts,
             )
-            with StreamChaosSandbox(profile) as stream_sb:
-                stream_sb.telemetry.test_name = func.__name__
-                GLOBAL_CHAOS_REGISTRY.register(stream_sb.telemetry)
+            stream_sb = StreamChaosSandbox(_seeded(profile, func.__name__))
+            stream_sb.telemetry.test_name = func.__name__
+            GLOBAL_CHAOS_REGISTRY.register(stream_sb.telemetry)
+            return stream_sb
+
+        if inspect.iscoroutinefunction(func):
+
+            @functools.wraps(func)
+            async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+                # The sandbox must stay installed while the coroutine actually runs.
+                with _make_sandbox() as stream_sb:
+                    kwargs["stream_sandbox"] = stream_sb
+                    return await func(*args, **kwargs)
+
+            return async_wrapper
+
+        @functools.wraps(func)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            with _make_sandbox() as stream_sb:
                 kwargs["stream_sandbox"] = stream_sb
                 return func(*args, **kwargs)
 

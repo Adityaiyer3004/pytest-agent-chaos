@@ -8,7 +8,7 @@ import os
 import socket
 import threading
 import time
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from typing import Any
 
 import httpx
@@ -18,7 +18,7 @@ from fastapi import FastAPI, Response
 from fastapi.responses import StreamingResponse
 
 from agent_app.app import app as agent_app
-from pytest_agent_chaos.proxy.client import ChaosProxyClient
+from pytest_agent_chaos.sidecar.client import RemoteChaosClient
 
 
 def _is_port_in_use(port: int) -> bool:
@@ -91,33 +91,41 @@ def mock_upstream_llm() -> Generator[str, None, None]:
 
 @pytest.fixture
 def running_deployed_agent(
-    chaos_proxy: ChaosProxyClient, mock_upstream_llm: str
-) -> Generator[str, None, None]:
-    """Ensures a deployed agent service is running on port 8000, configured to route through chaos proxy."""
-    # Configure the proxy to forward upstream requests to our mock upstream LLM
-    chaos_proxy.set_upstream(mock_upstream_llm)
+    chaos_sidecar: Callable[..., RemoteChaosClient], mock_upstream_llm: str
+) -> Generator[tuple[RemoteChaosClient, str], None, None]:
+    """Ensures a deployed agent service is reachable, configured to route through the chaos sidecar.
 
-    target_port = 8000
+    If a real container (e.g. via docker-compose) is already listening on the
+    conventional port 8000, attaches to that instead of starting an in-process one --
+    this is the manual/docker-compose path and is unaffected by the port choice below.
+    Otherwise starts one in-process on a freshly allocated port, so that running this
+    test file under pytest-xdist doesn't race multiple workers for the same fixed port.
+    """
+    sidecar_client = chaos_sidecar(upstream_host=mock_upstream_llm)
+
+    docker_compose_port = 8000
+    target_port = docker_compose_port
     server: BackgroundServer | None = None
 
-    # Check if a live container is already running on port 8000
+    # Check if a live container is already running on the conventional port
     is_live = False
     try:
         with httpx.Client(timeout=1.0) as c:
-            if c.get(f"http://127.0.0.1:{target_port}/health").status_code == 200:
+            if c.get(f"http://127.0.0.1:{docker_compose_port}/health").status_code == 200:
                 is_live = True
     except (httpx.HTTPError, OSError):
         is_live = False
 
     old_openai_base = os.environ.get("OPENAI_BASE_URL")
     if not is_live:
-        # Route agent upstream traffic to the chaos proxy
-        os.environ["OPENAI_BASE_URL"] = chaos_proxy.control_url
+        # Route agent upstream traffic to the chaos sidecar
+        os.environ["OPENAI_BASE_URL"] = sidecar_client.base_url
+        target_port = _find_free_port()
         server = BackgroundServer(agent_app, target_port)
         server.start()
 
     try:
-        yield f"http://127.0.0.1:{target_port}"
+        yield sidecar_client, f"http://127.0.0.1:{target_port}"
     finally:
         if server:
             server.stop()
@@ -128,15 +136,16 @@ def running_deployed_agent(
 
 
 def test_deployed_agent_recovers_from_severed_sse_socket(
-    chaos_proxy: ChaosProxyClient,
-    running_deployed_agent: str,
+    running_deployed_agent: tuple[RemoteChaosClient, str],
 ):
     """Verifies that an out-of-process deployed agent container handles mid-stream socket drops."""
-    # 1. Command the sidecar proxy to drop the TCP stream mid-generation on call 1
-    chaos_proxy.inject_mid_stream_drop(match_path="/chat/completions", drop_after_bytes=100)
+    sidecar_client, agent_base_url = running_deployed_agent
+
+    # 1. Command the sidecar to drop the TCP stream mid-generation on call 1
+    sidecar_client.add_rule(fault_type="sse_midstream_drop", trigger_on_call=1, drop_after_chunks=1)
 
     # 2. Send request to the live deployed FastAPI agent service on port 8000
-    agent_api_url = f"{running_deployed_agent}/api/v1/run-agent"
+    agent_api_url = f"{agent_base_url}/api/v1/run-agent"
     payload = {
         "session_id": "prod-session-9081",
         "prompt": "Synthesize the Q3 compliance audit ledger.",
@@ -153,19 +162,20 @@ def test_deployed_agent_recovers_from_severed_sse_socket(
     assert data["status"] == "COMPLETED"
     assert "compliance audit" in data["output"].lower()
 
-    # Verify proxy telemetry confirms 2 calls were intercepted (1 failed + 1 recovery)
-    telemetry = chaos_proxy.get_telemetry()
-    assert any(count >= 2 for count in telemetry["call_counts"].values())
+    # Verify sidecar telemetry confirms 2 calls were intercepted (1 failed + 1 recovery)
+    telemetry = sidecar_client.get_telemetry()
+    assert telemetry["total_calls"] >= 2
+    assert telemetry["recovery_succeeded"] is True
 
 
 def test_deployed_agent_recovers_from_proxy_429_rate_limit(
-    chaos_proxy: ChaosProxyClient,
-    running_deployed_agent: str,
+    running_deployed_agent: tuple[RemoteChaosClient, str],
 ):
-    """Verifies that the deployed agent backs off and recovers when proxy returns 429."""
-    chaos_proxy.inject_upstream_429(match_path="/chat/completions", trigger_on_call=1)
+    """Verifies that the deployed agent backs off and recovers when the sidecar returns 429."""
+    sidecar_client, agent_base_url = running_deployed_agent
+    sidecar_client.add_rule(fault_type="rate_limit_429", trigger_on_call=1, retry_after=1)
 
-    agent_api_url = f"{running_deployed_agent}/api/v1/run-agent"
+    agent_api_url = f"{agent_base_url}/api/v1/run-agent"
     payload = {
         "session_id": "prod-session-9082",
         "prompt": "Synthesize the Q3 compliance audit ledger.",
