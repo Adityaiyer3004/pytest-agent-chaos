@@ -1,5 +1,7 @@
 """pytest-agent-chaos: Deterministic chaos engineering and fault-injection for multi-agent LLM systems."""
 
+from typing import Any
+
 from pytest_agent_chaos.exceptions import (
     AgentChaosException,
     AgentLoopExhaustedError,
@@ -22,13 +24,24 @@ from pytest_agent_chaos.models import (
     GraphAuditTelemetry,
 )
 from pytest_agent_chaos.plugin import chaos_inject, stream_chaos_inject
-from pytest_agent_chaos.sidecar import (
-    ChaosSidecarServer,
-    RemoteChaosClient,
-    run_chaos_sidecar,
-)
 
 __version__ = "0.1.0"
+
+# The sidecar (fastapi/uvicorn) is an optional extra (`pip install
+# pytest-agent-chaos[sidecar]`), not a core dependency. Importing it eagerly here
+# would break plain `pip install pytest-agent-chaos` entirely: pytest's pytest11
+# entry point loads this package to reach plugin.py, so any ImportError here is
+# fatal to every test run, not just to sidecar usage. Load it lazily instead.
+_LAZY_SIDECAR_EXPORTS = ("ChaosSidecarServer", "RemoteChaosClient", "run_chaos_sidecar")
+
+
+def __getattr__(name: str) -> Any:
+    if name in _LAZY_SIDECAR_EXPORTS:
+        from pytest_agent_chaos import sidecar
+
+        return getattr(sidecar, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "AgentChaosException",
