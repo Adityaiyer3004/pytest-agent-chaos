@@ -15,7 +15,7 @@ from typing import Any, cast
 
 import httpx
 
-from pytest_agent_chaos.models import ChaosProfile, ChaosTelemetry, FaultType
+from pytest_agent_chaos.models import DEFAULT_SEED, ChaosProfile, ChaosTelemetry, FaultType
 
 # Guards install/restore of the process-global httpx.Client.send / AsyncClient.send
 # monkeypatch. Sandboxes must still be entered/exited in strict LIFO order (standard
@@ -126,7 +126,8 @@ class StreamChaosSandbox:
         self.telemetry = ChaosTelemetry(fault_type=profile.fault_type)
         # Private RNG stream, mirroring ChaosSandbox: probability draws must not
         # depend on what other sandboxes have already pulled from global random.
-        self._rng = random.Random(profile.seed)
+        # Falls back to DEFAULT_SEED (not OS entropy) if the profile wasn't seeded.
+        self._rng = random.Random(profile.seed if profile.seed is not None else DEFAULT_SEED)
         self._original_sync_send: Callable[..., Any] | None = None
         self._original_async_send: Callable[..., Any] | None = None
         self._patched_sync_send: Callable[..., Any] | None = None

@@ -364,3 +364,58 @@ def test_cycle_detection_does_not_flag_same_node_called_repeatedly() -> None:
     for _ in range(5):
         auditor.record_step("call_llm")
     assert auditor.telemetry.cycle_detected is False
+
+
+def test_cycle_detection_does_not_flag_degenerate_period_two_single_node_block() -> None:
+    # [A, A] repeated 3 times is a period-2 match in shape, but every element is the
+    # same node -- still just a repeated single-node retry, not a 2-node ping-pong.
+    auditor = StateGraphAuditor(max_steps=10, detect_cycles=True, raise_on_cycle=True)
+    auditor.record_step("plan")
+    for _ in range(6):
+        auditor.record_step("call_llm")
+    assert auditor.telemetry.cycle_detected is False
+
+
+# --- Bug 11: stream_chaos fixture/decorator never seeded StreamChaosSandbox,
+# so results with probability < 1.0 depended on OS entropy, not test identity ---
+
+
+def _probability_profile(seed: int | None) -> ChaosProfile:
+    return ChaosProfile(
+        fault_type=FaultType.RATE_LIMIT_429,
+        trigger_on_call=1,
+        probability=0.5,
+        intercept_all_hosts=True,
+        seed=seed,
+    )
+
+
+def test_stream_chaos_inject_decorator_seeds_the_sandbox() -> None:
+    @stream_chaos_inject(
+        fault=FaultType.RATE_LIMIT_429, trigger_on_call=1, intercept_all_hosts=True
+    )
+    def inner(stream_sandbox: StreamChaosSandbox) -> int:
+        assert stream_sandbox.profile.seed is not None
+        return stream_sandbox.profile.seed
+
+    first = inner()
+    second = inner()
+    assert first == second  # derived from the same function name both times
+
+
+def test_stream_sandbox_without_explicit_seed_is_still_reproducible() -> None:
+    # Direct construction, bypassing the fixtures/decorators entirely: must fall back
+    # to DEFAULT_SEED rather than OS entropy.
+    def draw() -> float:
+        sb = StreamChaosSandbox(_probability_profile(seed=None))
+        return sb._rng.random()
+
+    assert draw() == draw()
+
+
+def test_stream_sandbox_explicit_seed_reproduces_identical_results(live_url: str) -> None:
+    def run(seed: int) -> int:
+        with StreamChaosSandbox(_probability_profile(seed=seed)), httpx.Client() as client:
+            return client.get(f"{live_url}/plain").status_code
+
+    assert run(seed=7) == run(seed=7)

@@ -114,7 +114,7 @@ def stream_chaos(
     active_sandboxes: list[StreamChaosSandbox] = []
 
     def _create_stream_sandbox(profile: ChaosProfile) -> StreamChaosSandbox:
-        sandbox = StreamChaosSandbox(profile)
+        sandbox = StreamChaosSandbox(_seeded(profile, request.node.name))
         sandbox.telemetry.test_name = request.node.name
         GLOBAL_CHAOS_REGISTRY.register(sandbox.telemetry)
         active_sandboxes.append(sandbox)
@@ -239,7 +239,7 @@ def stream_chaos_inject(
                 retry_after_seconds=retry_after_seconds,
                 intercept_all_hosts=intercept_all_hosts,
             )
-            stream_sb = StreamChaosSandbox(profile)
+            stream_sb = StreamChaosSandbox(_seeded(profile, func.__name__))
             stream_sb.telemetry.test_name = func.__name__
             GLOBAL_CHAOS_REGISTRY.register(stream_sb.telemetry)
             return stream_sb

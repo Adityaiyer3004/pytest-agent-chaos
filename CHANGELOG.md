@@ -9,6 +9,30 @@ project adheres to [Semantic Versioning](https://semver.org/) once it reaches
 
 ### Fixed
 
+- **SSE drop marked the endpoint "faulted" before confirming the drop fired.**
+  If `drop_after_chunks` exceeded the real chunk count, nothing ever dropped
+  (`faults_injected` stayed `0`), but the next successful call to that
+  endpoint was still counted as a recovery. The fault is now only recorded
+  via a callback invoked from the exact point the byte stream itself raises,
+  for both the sync and async paths.
+- **`StreamChaosSandbox` ignored `profile.probability` entirely.** Only
+  `ChaosSandbox` (tool corruptor) ever consulted it; `probability=0.0` still
+  injected on the trigger call for transport faults. `_get_active_fault` now
+  draws from the same private `random.Random` the sandbox already has.
+- **`stream_chaos`/`stream_chaos_inject` never seeded the sandbox they
+  create**, unlike the tool-corruption fixture/decorator. With
+  `probability < 1.0`, this meant `StreamChaosSandbox`'s RNG fell back to
+  `random.Random(None)` (OS entropy) rather than a derived per-test seed, so
+  results varied between otherwise-identical runs — directly undermining the
+  "deterministic" part of the pitch. Both now route through `_seeded()`. As a
+  second line of defense, `ChaosSandbox`/`StreamChaosSandbox` constructed
+  directly (bypassing the fixtures/decorators) now fall back to
+  `models.DEFAULT_SEED` instead of `None`, so even raw usage is reproducible.
+- **Cycle detection still matched a single node repeated many times in a
+  row.** Excluding period 1 wasn't enough: a degenerate period-2 block made
+  of the same node twice (e.g. `[A, A]` repeated 3 times, from `call_llm`
+  called 6 times straight) still looked like a 2-node cycle. Any block where
+  every element is identical is now skipped regardless of period length.
 - **SSE drop forced every call to stream, not just the faulted one.** With
   `SSE_MIDSTREAM_DROP` active, a plain (non-streaming) request on a call where
   no fault fires used to come back unread, breaking `.json()`/`.text` on real
@@ -93,8 +117,8 @@ project adheres to [Semantic Versioning](https://semver.org/) once it reaches
   `LATENCY_JITTER` transport faults, and the `agent_chaos`/`stream_chaos`/
   `graph_auditor` pytest fixtures themselves (previously only exercised via
   the decorators, never as fixtures).
-- CI now also runs the suite under `pytest -n auto` (parallel-safety) and
-  against the exact dependency floors declared in `pyproject.toml`, across
-  Python 3.10–3.14.
+- CI now also runs the suite under `pytest -n auto` (parallel-safety), enforces
+  `ruff format --check`, and runs against the exact dependency floors declared
+  in `pyproject.toml`, across Python 3.10–3.14.
 
 [Unreleased]: https://github.com/Adityaiyer3004/pytest-agent-chaos/compare/v0.1.0...HEAD

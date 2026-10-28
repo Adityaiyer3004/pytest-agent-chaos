@@ -9,6 +9,11 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
+# Fallback seed when ChaosProfile.seed is unset and no caller (fixture, decorator)
+# derived one. Sandboxes constructed directly, outside the plugin machinery, still
+# get a reproducible RNG stream instead of silently seeding from OS entropy.
+DEFAULT_SEED = 0
+
 
 class FaultType(str, Enum):
     """Enumeration of deterministic fault types injected by agent-chaos."""
@@ -43,7 +48,10 @@ class ChaosProfile(BaseModel):
             "Seed for this sandbox's private RNG stream, used only when probability < 1.0. "
             "Unset means the sandbox is seeded automatically (by pytest fixtures/decorators, "
             "from --chaos-seed plus the test name) so results stay independent of which other "
-            "chaos tests ran before it and in what order."
+            "chaos tests ran before it and in what order. If a profile reaches a sandbox "
+            "without having been seeded at all (e.g. constructed directly, bypassing the "
+            "fixtures/decorators), the sandbox falls back to DEFAULT_SEED rather than OS "
+            "entropy, so results are still reproducible."
         ),
     )
     trigger_on_call: int = Field(
