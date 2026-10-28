@@ -157,8 +157,10 @@ def create_sidecar_app(default_upstream: str = "https://api.openai.com") -> Fast
                 "drop_mid_stream",
                 "FaultType.SSE_MIDSTREAM_DROP",
             )
-            if is_stream_drop:
-                faulted_paths.add(path)
+            # Marking faulted_paths happens inside chaos_stream_generator below, only
+            # once the drop actually fires -- if the upstream response has fewer
+            # chunks than drop_after, nothing is ever dropped, and this path must not
+            # look "faulted" to the next call's recovery check.
             drop_after = active_rule.get("drop_after_chunks", 1) if active_rule else 1
             drop_mid_chunk = active_rule.get("drop_mid_chunk", False) if active_rule else False
 
@@ -177,6 +179,7 @@ def create_sidecar_app(default_upstream: str = "https://api.openai.com") -> Fast
                         chunk_count += 1
                         if is_stream_drop and chunk_count > drop_after:
                             telemetry["faults_injected"] += 1
+                            faulted_paths.add(path)
                             if drop_mid_chunk and len(chunk) > 1:
                                 yield chunk[: max(1, len(chunk) // 2)]
                             # Raise (not `return`) so uvicorn aborts the connection mid-body:
