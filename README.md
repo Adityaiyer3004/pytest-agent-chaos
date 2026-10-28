@@ -262,16 +262,68 @@ Chaos Resilience Index: 100.0% | Injected Faults Handled: 3/3 | Total Calls Inte
 
 ---
 
+## ⚠️ Limitations
+
+Know these before trusting a green run:
+
+* **In-process transport faults only reach `httpx` and `httpx2` clients.**
+  `StreamChaosSandbox` patches `Client.send` / `AsyncClient.send` on `httpx`,
+  and on `httpx2` when it's installed (the openai SDK uses `httpx2` from 3.x
+  on). Anything that sends through another stack (`requests`, `aiohttp`,
+  including openai's optional aiohttp client, `botocore`, or gRPC) is
+  not intercepted, and no fault fires. For those, run the sidecar and point
+  the client's base URL at it.
+* **SSE drops need a body that is actually streaming.** A drop cuts the
+  response after N network reads. An `httpx.MockTransport` response built
+  from `bytes` already holds its whole body in memory, so the drop never fires
+  and `faults_injected` stays `0`. Use a generator body, a real local server,
+  or the sidecar.
+* **Host matching is a substring check.** A request is intercepted when any
+  entry in `target_domains` appears in its host. Hosts outside the defaults
+  (Azure OpenAI, self-hosted gateways, `localhost`) need `target_domains` or
+  `intercept_all_hosts=True`.
+* **The patch is process-global.** While a sandbox is active, every
+  `httpx`/`httpx2` client in the process, on every thread, goes through it.
+  Nested sandboxes must exit in reverse (LIFO) order. Parallel runs are safe
+  under `pytest-xdist` (separate processes) but not across threads in one
+  process.
+* **Faults are scheduled by call count, across all intercepted endpoints.**
+  `trigger_on_call=2` means the second intercepted request of any kind, not
+  the second request to one endpoint.
+* **"Recovered" is a structural heuristic.** Transport recovery means a later
+  2xx from the same `(method, host, path)`. Tool-call recovery means a later,
+  well-formed payload with the same JSON type and top-level keys. Neither
+  checks that the agent's answer is correct. Call `record_recovery()` when you
+  have stronger evidence.
+* **`LATENCY_JITTER` with `latency_ms=0` is a no-op** and is not counted as a
+  fault.
+* **The sidecar supports a subset of faults**: `rate_limit_429`,
+  `gateway_timeout_504`, `latency_jitter`, and `sse_midstream_drop`. It speaks
+  plain HTTP (no TLS interception), and its rules and telemetry are shared by
+  every client of that sidecar process, so use one sidecar per test (the
+  `chaos_sidecar` fixture does) or call `clear_rules()` between tests.
+
+---
+
 ## 📌 Versioning
 
 This project is pre-1.0 (`0.x`) and the API is still settling — expect breaking
-changes between minor versions until 1.0. The public surface is exactly what
-`pytest_agent_chaos.__all__` exports: the pytest fixtures and decorators, the
-sandbox classes (`ChaosSandbox`, `StreamChaosSandbox`), `FaultType` /
-`ChaosProfile` / telemetry models, the exception hierarchy, and the sidecar
-client/server entry points (`RemoteChaosClient`, `ChaosSidecarServer`,
-`run_chaos_sidecar`). Anything reached only via `pytest_agent_chaos.interceptors.*`
-or `pytest_agent_chaos.sidecar.server` internals, or prefixed with `_`, is not
+changes between minor versions until 1.0. The public surface is:
+
+* everything in `pytest_agent_chaos.__all__`: the decorators (`chaos_inject`,
+  `stream_chaos_inject`), the sandbox classes (`ChaosSandbox`,
+  `StreamChaosSandbox`), `FaultType` / `ChaosProfile` / telemetry models, and
+  the exception hierarchy;
+* the sidecar entry points `RemoteChaosClient`, `ChaosSidecarServer`, and
+  `run_chaos_sidecar`. These are deliberately **not** in `__all__` (so
+  `from pytest_agent_chaos import *` never imports FastAPI/uvicorn); import them
+  by name, with the `[sidecar]` extra installed;
+* the pytest fixtures the plugin registers (`agent_chaos`, `stream_chaos`,
+  `graph_auditor`, `chaos_sandbox`, `stream_sandbox`, and `chaos_sidecar`, the
+  last of which needs the `[sidecar]` extra) and its CLI options.
+
+Anything reached only via `pytest_agent_chaos.interceptors.*` or
+`pytest_agent_chaos.sidecar.server` internals, or prefixed with `_`, is not
 part of the contract and can change without notice. See `CHANGELOG.md` for
 what changed between releases.
 
