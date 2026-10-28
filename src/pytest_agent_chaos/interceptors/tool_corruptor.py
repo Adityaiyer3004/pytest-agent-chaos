@@ -8,6 +8,7 @@ and malformed tool arguments before they hit the agent's parser.
 import functools
 import json
 import random
+import warnings
 from collections.abc import Callable
 from typing import Any
 
@@ -25,31 +26,35 @@ class ChaosSandbox:
         # sandboxes have already pulled from the (shared, order-dependent) global random.
         # Falls back to DEFAULT_SEED (not OS entropy) if the profile wasn't seeded.
         self._rng = random.Random(profile.seed if profile.seed is not None else DEFAULT_SEED)
-        # Top-level keys of the payload that was corrupted; None until a fault fires.
-        # An empty frozenset means the faulted payload was not a JSON object.
-        self._faulted_keys: frozenset[str] | None = None
+        # Shape of the payload that was corrupted; None until a fault fires.
+        # ("dict", keys) for JSON objects; (type_name, None) for anything else, so a
+        # retry is only "the same tool call" if it matches both type and (for dicts) keys.
+        self._faulted_shape: tuple[str, frozenset[str] | None] | None = None
 
     @staticmethod
-    def _object_keys(raw: str) -> frozenset[str] | None:
+    def _object_shape(raw: str) -> tuple[str, frozenset[str] | None] | None:
         try:
             parsed = json.loads(raw)
         except json.JSONDecodeError:
             return None
-        return frozenset(parsed) if isinstance(parsed, dict) else frozenset()
+        if isinstance(parsed, dict):
+            return ("dict", frozenset(parsed))
+        return (type(parsed).__name__, None)
 
     def _is_recovery(self, raw_arguments: str) -> bool:
         """A clean call is recovery only if it is well-formed JSON for the same tool call.
 
-        Same tool call = same top-level keys as the payload that was corrupted. This
-        checks structure, not schema validity; call record_recovery() when you have
-        stronger evidence (e.g. the tool executed successfully).
+        Same tool call = same top-level JSON type, and for objects, the same top-level
+        keys, as the payload that was corrupted. This checks structure, not schema
+        validity; call record_recovery() when you have stronger evidence (e.g. the tool
+        executed successfully).
         """
-        if self._faulted_keys is None:
+        if self._faulted_shape is None:
             return False
-        keys = self._object_keys(raw_arguments)
-        if keys is None:
+        shape = self._object_shape(raw_arguments)
+        if shape is None:
             return False
-        return not self._faulted_keys or keys == self._faulted_keys
+        return shape == self._faulted_shape
 
     def mutate_tool_payload(self, raw_arguments: str) -> str:
         """Deterministically corrupts LLM tool-call JSON payloads to test parser recovery.
@@ -76,14 +81,14 @@ class ChaosSandbox:
         )
 
         if not should_inject:
-            if self._faulted_keys is not None:
+            if self._faulted_shape is not None:
                 self.telemetry.total_retries_observed += 1
                 if self._is_recovery(raw_arguments):
                     self.telemetry.recovery_succeeded = True
             return raw_arguments
 
         self.telemetry.faults_injected += 1
-        self._faulted_keys = self._object_keys(raw_arguments) or frozenset()
+        self._faulted_shape = self._object_shape(raw_arguments) or ("unknown", None)
 
         if self.profile.fault_type == FaultType.TRUNCATED_JSON_TOOL_CALL:
             # Slice off the closing braces/quotes to simulate max_tokens cutoff
@@ -148,15 +153,27 @@ class ChaosSandbox:
             if kwargs:
                 try:
                     serialized = json.dumps(kwargs)
-                    mutated = self.mutate_tool_payload(serialized)
-                    try:
-                        new_kwargs = json.loads(mutated)
-                        return tool_func(*args, **new_kwargs)
-                    except json.JSONDecodeError:
-                        # Pass mutated string to test caller's error handling
-                        return tool_func(mutated, *args)
                 except (TypeError, ValueError):
-                    pass
+                    # A non-JSON-serializable kwarg (set, bytes, custom object, ...)
+                    # can't be run through mutate_tool_payload at all. Warn rather than
+                    # silently skipping: an un-intercepted call here doesn't advance
+                    # total_calls_intercepted, so trigger_on_call would otherwise fire
+                    # on the wrong call with no indication why.
+                    warnings.warn(
+                        "pytest_agent_chaos: wrap_tool could not JSON-serialize kwargs "
+                        f"for {tool_func.__name__!r}; this call was not intercepted and "
+                        "does not count toward trigger_on_call.",
+                        stacklevel=2,
+                    )
+                    return tool_func(*args, **kwargs)
+
+                mutated = self.mutate_tool_payload(serialized)
+                try:
+                    new_kwargs = json.loads(mutated)
+                    return tool_func(*args, **new_kwargs)
+                except json.JSONDecodeError:
+                    # Pass mutated string to test caller's error handling
+                    return tool_func(mutated, *args)
 
             return tool_func(*args, **kwargs)
 

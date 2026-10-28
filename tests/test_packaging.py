@@ -49,6 +49,29 @@ def test_core_import_succeeds_without_fastapi_or_uvicorn() -> None:
     assert "OK" in result.stdout
 
 
+def test_star_import_does_not_require_fastapi_or_uvicorn() -> None:
+    # __all__ must not list the lazy sidecar exports (ChaosSidecarServer,
+    # RemoteChaosClient, run_chaos_sidecar): `import *` resolves names via __all__
+    # directly, bypassing __getattr__'s lazy load, so listing them there forces the
+    # sidecar import eagerly for every star-importer -- defeating the lazy loader.
+    code = (
+        "import builtins\n"
+        "_real_import = builtins.__import__\n"
+        "def _blocked(name, *a, **k):\n"
+        "    if name in ('fastapi', 'uvicorn'):\n"
+        "        raise ModuleNotFoundError(f'simulated: no module named {name!r}')\n"
+        "    return _real_import(name, *a, **k)\n"
+        "builtins.__import__ = _blocked\n"
+        "from pytest_agent_chaos import *\n"
+        "print('OK')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], check=False, capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr
+    assert "OK" in result.stdout
+
+
 def test_sidecar_exports_are_still_reachable_lazily() -> None:
     code = (
         "from pytest_agent_chaos import ChaosSidecarServer, RemoteChaosClient, run_chaos_sidecar\n"

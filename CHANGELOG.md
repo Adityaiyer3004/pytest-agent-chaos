@@ -7,6 +7,44 @@ project adheres to [Semantic Versioning](https://semver.org/) once it reaches
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-28
+
+### Fixed
+
+- **`from pytest_agent_chaos import *` crashed with
+  `ModuleNotFoundError: No module named 'uvicorn'` on a plain install.**
+  `__all__` listed `ChaosSidecarServer`, `RemoteChaosClient`, and
+  `run_chaos_sidecar` — the lazy sidecar exports added in 0.1.1. A star
+  import resolves names in `__all__` directly, bypassing the module's
+  `__getattr__` lazy loader entirely, so it forced the `fastapi`/`uvicorn`
+  import eagerly for every star-importer. Removed the three names from
+  `__all__`; explicit imports (`from pytest_agent_chaos import
+  ChaosSidecarServer`) still resolve lazily as before. Covered by a new
+  `test_star_import_does_not_require_fastapi_or_uvicorn` regression test.
+- **`LATENCY_JITTER` faults slept but were never counted or recorded.**
+  `StreamChaosSandbox` incremented `faults_injected` and called
+  `_note_fault` for every other fault type, but the latency-jitter branch
+  only did `time.sleep`/`asyncio.sleep` and returned — so a test run that
+  only ever hit latency jitter reported zero faults injected.
+- **The sidecar tracked faulted endpoints by path alone, not by method +
+  path.** `faulted_paths` was a `set[str]` keyed on the request path only,
+  so a fault on one HTTP method could be "recovered" by an unrelated
+  successful call to a different method on the same path. Now keyed by
+  `(method, path)`, matching the in-process sandbox's endpoint key.
+- **`ChaosSandbox`'s recovery check treated all non-dict JSON payloads as
+  interchangeable.** `_object_keys` returned an empty `frozenset()` for any
+  top-level JSON value that wasn't an object (a list, a string, a number),
+  so a corrupted list payload could be marked "recovered" by a later call
+  whose payload was a totally different type, as long as neither was a
+  dict. Replaced with `_object_shape`, which also compares the JSON type
+  name for non-dict payloads.
+- **`ChaosSandbox.wrap_tool` silently skipped interception for
+  non-JSON-serializable kwargs** (a `set`, `bytes`, or custom object),
+  with no indication why — the call still ran, but didn't count toward
+  `total_calls_intercepted`, so `trigger_on_call` could fire on an
+  unexpected call. Now emits a `UserWarning` naming the tool and explains
+  the call wasn't intercepted.
+
 ## [0.1.1] - 2026-10-28
 
 ### Fixed
@@ -154,5 +192,6 @@ project adheres to [Semantic Versioning](https://semver.org/) once it reaches
   `ruff format --check`, and runs against the exact dependency floors declared
   in `pyproject.toml`, across Python 3.10–3.14.
 
-[Unreleased]: https://github.com/Adityaiyer3004/pytest-agent-chaos/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/Adityaiyer3004/pytest-agent-chaos/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/Adityaiyer3004/pytest-agent-chaos/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/Adityaiyer3004/pytest-agent-chaos/compare/v0.1.0...v0.1.1
