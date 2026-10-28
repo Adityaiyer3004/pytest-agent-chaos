@@ -242,3 +242,29 @@ def test_deployed_langgraph_agent_over_chaos_proxy(
     assert telemetry["total_calls"] == 2
     assert telemetry["faults_injected"] == 1
     assert telemetry["recovery_succeeded"] is True
+
+
+def test_sidecar_sse_drop_that_never_fires_is_not_recorded_as_a_fault(
+    proxy_sidecar: RemoteChaosClient,
+) -> None:
+    """A configured SSE-drop rule that never actually triggers must not look faulted.
+
+    drop_after_chunks is higher than the number of chunks the mock upstream sends
+    (3), so the drop condition inside the sidecar's streaming generator is never
+    satisfied -- faults_injected must stay 0, and the next call must not be
+    recorded as a "recovery" from a fault that never happened.
+    """
+    proxy_sidecar.add_rule(fault_type="sse_midstream_drop", trigger_on_call=1, drop_after_chunks=10)
+
+    with httpx.Client(base_url=proxy_sidecar.base_url) as client:
+        with client.stream("POST", "/v1/chat/completions", json={"stream": True}) as resp1:
+            full1 = b"".join(resp1.iter_bytes())
+        assert full1.endswith(b"[DONE]\n\n")
+
+        with client.stream("POST", "/v1/chat/completions", json={"stream": True}) as resp2:
+            b"".join(resp2.iter_bytes())
+
+    telemetry = proxy_sidecar.get_telemetry()
+    assert telemetry["faults_injected"] == 0
+    assert telemetry["retries_observed"] == 0
+    assert telemetry["recovery_succeeded"] is False

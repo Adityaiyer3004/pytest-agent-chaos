@@ -64,9 +64,7 @@ def render_chaos_summary_table(
         total_faults += item.faults_injected
         total_calls += item.total_calls_intercepted
 
-        if item.recovery_succeeded or (
-            item.faults_injected > 0 and item.total_retries_observed > 0
-        ):
+        if item.recovery_succeeded:
             resilience_status = "RECOVERED"
             res_color = {"green": True, "bold": True}
             total_recovered += 1
