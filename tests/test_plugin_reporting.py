@@ -56,3 +56,33 @@ def test_empty_registry_writes_nothing():
     mock_reporter = MagicMock()
     render_chaos_summary_table(mock_reporter, registry=registry)
     assert not mock_reporter.write_sep.called
+
+
+def test_failed_retry_is_reported_as_unrecovered_not_recovered():
+    """A fault that was retried but never actually recovered must not report RECOVERED.
+
+    total_retries_observed > 0 only means a later call to the faulted endpoint
+    happened -- it says nothing about whether that call succeeded. Only
+    recovery_succeeded (set with evidence elsewhere) may report RECOVERED.
+    """
+    registry = ChaosTelemetryRegistry()
+    registry.register(
+        ChaosTelemetry(
+            test_name="test_agent_retries_but_never_recovers",
+            fault_type=FaultType.RATE_LIMIT_429,
+            total_calls_intercepted=2,
+            faults_injected=1,
+            total_retries_observed=1,
+            recovery_succeeded=False,
+        )
+    )
+
+    mock_reporter = MagicMock()
+    render_chaos_summary_table(mock_reporter, registry=registry)
+
+    calls_text = "".join(
+        call.args[0] for call in mock_reporter.write_line.call_args_list if call.args
+    )
+    assert "FAILED / UNRECOVERED" in calls_text
+    assert "Chaos Resilience Index: 0.0%" in calls_text
+    assert "Injected Faults Handled: 0/1" in calls_text
