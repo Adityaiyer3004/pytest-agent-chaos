@@ -10,12 +10,13 @@ import threading
 import time
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any
 
 import httpx
 import pytest
 
 from pytest_agent_chaos.exceptions import InfiniteAgentLoopError
-from pytest_agent_chaos.interceptors.llm_stream import StreamChaosSandbox
+from pytest_agent_chaos.interceptors.llm_stream import StreamChaosSandbox, _transports
 from pytest_agent_chaos.interceptors.state_graph import StateGraphAuditor
 from pytest_agent_chaos.interceptors.tool_corruptor import ChaosSandbox
 from pytest_agent_chaos.models import ChaosProfile, FaultType
@@ -263,9 +264,13 @@ def _rl_profile() -> ChaosProfile:
     return ChaosProfile(fault_type=FaultType.RATE_LIMIT_429, intercept_all_hosts=True)
 
 
+def _real_sends() -> list[tuple[Any, Any]]:
+    """(class, send) for every library the sandbox patches: httpx, plus httpx2 if installed."""
+    return [(cls, cls.send) for t in _transports() for cls in (t.lib.Client, t.lib.AsyncClient)]
+
+
 def test_lifo_sandbox_exit_restores_real_send() -> None:
-    real_send = httpx.Client.send
-    real_async_send = httpx.AsyncClient.send
+    real_sends = _real_sends()
     sb1 = StreamChaosSandbox(_rl_profile())
     sb2 = StreamChaosSandbox(_rl_profile())
     sb1.__enter__()
@@ -273,17 +278,16 @@ def test_lifo_sandbox_exit_restores_real_send() -> None:
     try:
         sb2.__exit__(None, None, None)
         sb1.__exit__(None, None, None)
-        assert httpx.Client.send is real_send
-        assert httpx.AsyncClient.send is real_async_send
+        for cls, send in real_sends:
+            assert cls.send is send
     finally:
         # Safety net in case an assertion above fails mid-test.
-        httpx.Client.send = real_send  # type: ignore[method-assign]
-        httpx.AsyncClient.send = real_async_send  # type: ignore[method-assign]
+        for cls, send in real_sends:
+            cls.send = send
 
 
 def test_non_lifo_sandbox_exit_warns_instead_of_corrupting() -> None:
-    real_send = httpx.Client.send
-    real_async_send = httpx.AsyncClient.send
+    real_sends = _real_sends()
     sb1 = StreamChaosSandbox(_rl_profile())
     sb2 = StreamChaosSandbox(_rl_profile())
     sb1.__enter__()
@@ -292,14 +296,14 @@ def test_non_lifo_sandbox_exit_warns_instead_of_corrupting() -> None:
         with pytest.warns(UserWarning, match="LIFO order"):
             sb1.__exit__(None, None, None)  # out of order: sb2 is still active
         # sb2's patch must survive sb1's misordered exit, not be silently clobbered.
-        assert httpx.Client.send is sb2._patched_sync_send
+        assert httpx.Client.send is sb2._patches["httpx"].patched_sync_send
         sb2.__exit__(None, None, None)
     finally:
         # Out-of-order exits can't fully recover the true original (sb1's stale
         # patch is what remains active) -- that's the whole point of the warning.
         # Force-restore here so this test doesn't leak the patch into later tests.
-        httpx.Client.send = real_send  # type: ignore[method-assign]
-        httpx.AsyncClient.send = real_async_send  # type: ignore[method-assign]
+        for cls, send in real_sends:
+            cls.send = send
 
 
 # --- Bug 8: SSE drop that never actually fires must not mark the endpoint as faulted ---
