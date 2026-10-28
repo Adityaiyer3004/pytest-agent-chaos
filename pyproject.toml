@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pytest-agent-chaos"
-version = "0.1.0"
+version = "0.1.1"
 description = "Deterministic chaos engineering and fault-injection plugin for multi-agent LLM workflows and tool-calling pipelines."
 readme = "README.md"
 requires-python = ">=3.10"
