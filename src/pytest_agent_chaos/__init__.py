@@ -25,7 +25,7 @@ from pytest_agent_chaos.models import (
 )
 from pytest_agent_chaos.plugin import chaos_inject, stream_chaos_inject
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 # The sidecar (fastapi/uvicorn) is an optional extra (`pip install
 # pytest-agent-chaos[sidecar]`), not a core dependency. Importing it eagerly here
