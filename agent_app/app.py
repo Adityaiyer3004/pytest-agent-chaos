@@ -35,7 +35,7 @@ async def health() -> dict[str, str]:
 @app.post("/api/v1/run-agent")
 async def run_agent(req: AgentRunRequest) -> dict[str, Any]:
     """Autonomous agent endpoint that resiliently handles mid-stream socket disconnects."""
-    base_url = os.environ.get("OPENAI_BASE_URL", "http://localhost:8080/v1").rstrip("/")
+    base_url = os.environ.get("OPENAI_BASE_URL", "http://localhost:8085/v1").rstrip("/")
     session_id = req.session_id
     attempts = 0
     max_retries = 3
