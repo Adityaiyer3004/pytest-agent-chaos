@@ -89,8 +89,7 @@ def test_agent_recovers_from_sse_midstream_drop(stream_sandbox):
 ```python
 from pydantic import BaseModel, ConfigDict
 import pytest
-from pytest_agent_chaos import FaultType, chaos_inject
-from pytest_agent_chaos.interceptors.tool_corruptor import ChaosSandbox
+from pytest_agent_chaos import ChaosSandbox, FaultType, chaos_inject
 
 
 class ExtractInvoice(BaseModel):
@@ -122,8 +121,8 @@ def test_invoice_extractor_recovers_from_truncated_tool_json(chaos_sandbox: Chao
 
 ```python
 import pytest
+from pytest_agent_chaos import StateGraphAuditor
 from pytest_agent_chaos.exceptions import InfiniteAgentLoopError
-from pytest_agent_chaos.interceptors.state_graph import StateGraphAuditor
 
 
 def test_multi_agent_graph_loop_guardrail():
@@ -249,7 +248,7 @@ Chaos Resilience Index: 100.0% | Injected Faults Handled: 3/3 | Total Calls Inte
 | `SSE_MIDSTREAM_DROP` | SSE Stream | Drops connection after $N$ chunks with `httpx.RemoteProtocolError`. |
 | `LATENCY_JITTER` | Transport / Node | Injects synthetic latency spikes in milliseconds. |
 | `TRUNCATED_JSON_TOOL_CALL` | Tool Parser | Slices tool arguments mid-JSON to simulate token cutoffs. |
-| `SCHEMA_TYPE_DRIFT` | Tool Parser | Flips numeric types to strings and sets required keys to `None`. |
+| `SCHEMA_TYPE_DRIFT` | Tool Parser | Recursively flips every value to a different type family (numbers → string sentinel, strings → `null`, booleans → array) to fail schema validation deterministically. |
 | `HALLUCINATED_PARAMS` | Tool Parser | Injects unexpected keys to verify `extra="forbid"` guardrails. |
 
 ---
