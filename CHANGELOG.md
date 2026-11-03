@@ -7,6 +7,21 @@ project adheres to [Semantic Versioning](https://semver.org/) once it reaches
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-04
+
+### Removed
+
+- **Python 3.10 support.** Python 3.10 reached end-of-life in October 2026.
+  `requires-python` is now `>=3.11`, so pip on 3.10 keeps resolving to
+  0.1.4, which stays available. CI tests 3.11–3.14 and runs the floor-version
+  job on 3.11.
+
+### Changed
+
+- `StreamChaosSandbox.__enter__` is annotated as returning `typing.Self`, so
+  subclasses get their own type back from `with`. The lint exception that
+  only existed for 3.10 is gone.
+
 ## [0.1.4] - 2026-11-04
 
 ### Fixed
@@ -254,7 +269,8 @@ project adheres to [Semantic Versioning](https://semver.org/) once it reaches
   `ruff format --check`, and runs against the exact dependency floors declared
   in `pyproject.toml`, across Python 3.10–3.14.
 
-[Unreleased]: https://github.com/Adityaiyer3004/pytest-agent-chaos/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/Adityaiyer3004/pytest-agent-chaos/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Adityaiyer3004/pytest-agent-chaos/compare/v0.1.4...v0.2.0
 [0.1.4]: https://github.com/Adityaiyer3004/pytest-agent-chaos/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/Adityaiyer3004/pytest-agent-chaos/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/Adityaiyer3004/pytest-agent-chaos/compare/v0.1.1...v0.1.2
