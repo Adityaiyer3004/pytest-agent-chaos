@@ -6,6 +6,7 @@ over live TCP sockets without in-process Python memory monkeypatching.
 """
 
 import json
+import time
 from typing import Any
 
 import httpx
@@ -267,6 +268,42 @@ def test_sidecar_sse_drop_that_never_fires_is_not_recorded_as_a_fault(
 
         with client.stream("POST", "/v1/chat/completions", json={"stream": True}) as resp2:
             b"".join(resp2.iter_bytes())
+
+    telemetry = proxy_sidecar.get_telemetry()
+    assert telemetry["faults_injected"] == 0
+    assert telemetry["retries_observed"] == 0
+    assert telemetry["recovery_succeeded"] is False
+
+
+def test_sidecar_latency_jitter_is_counted_and_retry_is_recovery(
+    proxy_sidecar: RemoteChaosClient,
+) -> None:
+    """Latency jitter is a fault like any other: counted, and a later 2xx recovers it."""
+    proxy_sidecar.add_rule(fault_type="latency_jitter", trigger_on_call=1, latency_ms=200)
+
+    with httpx.Client(base_url=proxy_sidecar.base_url) as client:
+        start = time.monotonic()
+        assert client.post("/v1/chat/completions", json={}).status_code == 200
+        assert time.monotonic() - start >= 0.2
+
+        telemetry = proxy_sidecar.get_telemetry()
+        assert telemetry["faults_injected"] == 1
+        assert telemetry["recovery_succeeded"] is False
+
+        assert client.post("/v1/chat/completions", json={}).status_code == 200
+
+    telemetry = proxy_sidecar.get_telemetry()
+    assert telemetry["faults_injected"] == 1
+    assert telemetry["retries_observed"] == 1
+    assert telemetry["recovery_succeeded"] is True
+
+
+def test_sidecar_zero_latency_jitter_is_not_a_fault(proxy_sidecar: RemoteChaosClient) -> None:
+    proxy_sidecar.add_rule(fault_type="latency_jitter", trigger_on_call=1, latency_ms=0)
+
+    with httpx.Client(base_url=proxy_sidecar.base_url) as client:
+        assert client.post("/v1/chat/completions", json={}).status_code == 200
+        assert client.post("/v1/chat/completions", json={}).status_code == 200
 
     telemetry = proxy_sidecar.get_telemetry()
     assert telemetry["faults_injected"] == 0

@@ -126,11 +126,17 @@ def create_sidecar_app(default_upstream: str = "https://api.openai.com") -> Fast
                 content=b'{"error": {"message": "Gateway Timeout from upstream host injected by chaos sidecar.", "code": 504}}',
             )
 
-        # 3. Fault: Latency Jitter
-        if active_rule and active_rule.get("fault_type") == "latency_jitter":
+        # 3. Fault: Latency Jitter (the call still goes upstream after the delay).
+        # latency_ms=0 is a no-op and isn't counted, matching the in-process sandbox.
+        if active_rule and active_rule.get("fault_type") in (
+            "latency_jitter",
+            "FaultType.LATENCY_JITTER",
+        ):
             latency_ms = active_rule.get("latency_ms", 0)
             if latency_ms > 0:
                 await asyncio.sleep(latency_ms / 1000.0)
+                telemetry["faults_injected"] += 1
+                faulted_paths.add(endpoint)
 
         # Resolve upstream target host
         upstream_base = (
