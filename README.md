@@ -350,7 +350,7 @@ coverage run --source=src -m pytest
 coverage report -m
 ```
 
-CI runs the full suite across Python 3.10–3.14, re-runs it under `pytest -n auto`,
+CI runs the full suite across Python 3.11–3.14, re-runs it under `pytest -n auto`,
 enforces the coverage gate, and separately installs the exact floor versions
 declared in `pyproject.toml` to catch dependency ranges that look fine on paper
 but don't actually resolve or work together.

@@ -7,7 +7,7 @@ name = "pytest-agent-chaos"
 version = "0.1.4"
 description = "Deterministic chaos engineering and fault-injection plugin for multi-agent LLM workflows and tool-calling pipelines."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [
     { name = "Aditya Iyer" }
@@ -26,7 +26,6 @@ classifiers = [
     "Framework :: Pytest",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -85,7 +84,7 @@ show_missing = true
 skip_covered = false
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.11"
 strict = true
 warn_unused_configs = true
 disallow_untyped_defs = true
@@ -93,9 +92,4 @@ disallow_incomplete_defs = true
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
-
-[tool.ruff.lint]
-ignore = [
-    "PYI034",  # Self return type requires typing_extensions on Python 3.10
-]
+target-version = "py311"

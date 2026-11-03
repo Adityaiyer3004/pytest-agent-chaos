@@ -18,7 +18,7 @@ import time
 import warnings
 from collections.abc import AsyncIterator, Callable, Iterator
 from types import ModuleType
-from typing import Any, NamedTuple, cast
+from typing import Any, NamedTuple, Self, cast
 
 import httpx
 
@@ -451,7 +451,7 @@ class StreamChaosSandbox:
         lib.Client.send = patched_sync_send
         lib.AsyncClient.send = patched_async_send
 
-    def __enter__(self) -> "StreamChaosSandbox":
+    def __enter__(self) -> Self:
         """Installs monkeypatches on Client.send and AsyncClient.send (httpx, and httpx2 if installed).
 
         Sandboxes nest like any other context manager: entering a second sandbox
