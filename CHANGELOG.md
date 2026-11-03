@@ -7,7 +7,27 @@ project adheres to [Semantic Versioning](https://semver.org/) once it reaches
 
 ## [Unreleased]
 
-## [0.1.3] - 2026-10-28
+## [0.1.4] - 2026-11-04
+
+### Fixed
+
+- **The sidecar's `latency_jitter` fault slept but was never counted.** The
+  same bug 0.1.2 fixed in the in-process `StreamChaosSandbox`, never ported
+  to the sidecar: a jitter rule delayed the call, but `faults_injected`
+  stayed `0` and a later successful call to that endpoint wasn't recorded as
+  a recovery. It is now counted and tracked like the other faults, and
+  `latency_ms=0` stays an uncounted no-op on both sides. The sidecar also
+  accepts `"FaultType.LATENCY_JITTER"` as a spelling, like the other faults.
+
+### Changed
+
+- CI and publish workflows use `actions/checkout@v7` and
+  `actions/setup-python@v7`, which run on Node 24. The v4/v5 releases used
+  Node 20, which GitHub Actions has deprecated.
+- Corrected the 0.1.3 release date below and added the missing comparison
+  links at the bottom of this file.
+
+## [0.1.3] - 2026-11-03
 
 ### Fixed
 
@@ -234,6 +254,8 @@ project adheres to [Semantic Versioning](https://semver.org/) once it reaches
   `ruff format --check`, and runs against the exact dependency floors declared
   in `pyproject.toml`, across Python 3.10–3.14.
 
-[Unreleased]: https://github.com/Adityaiyer3004/pytest-agent-chaos/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/Adityaiyer3004/pytest-agent-chaos/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/Adityaiyer3004/pytest-agent-chaos/compare/v0.1.3...v0.1.4
+[0.1.3]: https://github.com/Adityaiyer3004/pytest-agent-chaos/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/Adityaiyer3004/pytest-agent-chaos/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/Adityaiyer3004/pytest-agent-chaos/compare/v0.1.0...v0.1.1
