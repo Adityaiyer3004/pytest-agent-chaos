@@ -7,6 +7,48 @@ project adheres to [Semantic Versioning](https://semver.org/) once it reaches
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-10-28
+
+### Fixed
+
+- **`StreamChaosSandbox` injected nothing into the current openai SDK.**
+  openai 3.x sends through `httpx2`, a separate package from `httpx` with the
+  same API but no shared classes, and the sandbox only patched
+  `httpx.Client.send` / `httpx.AsyncClient.send`. On a default
+  `openai.OpenAI()` client every configured fault silently never fired, so
+  tests passed without exercising any chaos. The sandbox now also patches
+  `httpx2` when it's installed: injected responses are `httpx2.Response`,
+  timeouts raise `httpx2.ConnectTimeout`, and SSE drops raise
+  `httpx2.RemoteProtocolError`, the types `httpx2` callers actually handle.
+  `httpx` behaviour is unchanged, and `httpx2` stays optional (it needs
+  Python 3.11+).
+
+### Added
+
+- `tests/test_openai_sdk_integration.py`: end-to-end tests with the official
+  openai SDK and its *default* HTTP client against a real local socket,
+  covering 429/504/connect-timeout recovery through the SDK's built-in
+  retries, an SSE drop on a non-streaming call (retried by the SDK), and
+  mid-stream drops on sync and async streaming calls. Passes on openai 1.x,
+  2.x (`httpx`) and 3.x (`httpx2`). `openai>=1.40.0` is now an explicit `dev`
+  dependency and is pinned at that floor in the min-deps CI job.
+- Regression tests for each 0.1.2 fix that had no test of its own:
+  `LATENCY_JITTER` counting and recovery, the sidecar's `(method, path)`
+  endpoint key, `_object_shape` for non-dict payloads, and the `wrap_tool`
+  warning for non-JSON-serializable kwargs. Each one fails against the
+  pre-0.1.2 code.
+- README **Limitations** section: what is and isn't intercepted, the
+  `MockTransport` SSE-drop trap, substring host matching, process-global
+  patching, call-count scheduling, what "recovered" does and doesn't mean,
+  and the sidecar's fault subset.
+
+### Changed
+
+- README **Versioning** section no longer claims the public surface is
+  "exactly `__all__`". Since 0.1.2 the sidecar entry points are deliberately
+  outside `__all__` (and import lazily). The section now lists `__all__`, the
+  three sidecar names, and the plugin's fixtures and CLI options separately.
+
 ## [0.1.2] - 2026-10-28
 
 ### Fixed

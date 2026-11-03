@@ -63,6 +63,10 @@ class MockUpstreamLLM:
                 ).encode(),
             )
 
+        @self.app.get("/v1/models")
+        async def list_models() -> dict[str, Any]:
+            return {"object": "list", "data": []}
+
         self.config = uvicorn.Config(self.app, host="127.0.0.1", port=self.port, log_level="error")
         self.server = uvicorn.Server(self.config)
         import threading
@@ -266,5 +270,25 @@ def test_sidecar_sse_drop_that_never_fires_is_not_recorded_as_a_fault(
 
     telemetry = proxy_sidecar.get_telemetry()
     assert telemetry["faults_injected"] == 0
+    assert telemetry["retries_observed"] == 0
+    assert telemetry["recovery_succeeded"] is False
+
+
+def test_sidecar_fault_on_one_method_is_not_recovered_by_another_method(
+    proxy_sidecar: RemoteChaosClient,
+) -> None:
+    """Faulted endpoints are keyed by (method, path), not path alone.
+
+    A 429 on POST /v1/models followed by a successful GET /v1/models must not
+    count as a retry or a recovery -- they are different endpoints.
+    """
+    proxy_sidecar.add_rule(fault_type="rate_limit_429", trigger_on_call=1)
+
+    with httpx.Client(base_url=proxy_sidecar.base_url) as client:
+        assert client.post("/v1/models", json={}).status_code == 429
+        assert client.get("/v1/models").status_code == 200
+
+    telemetry = proxy_sidecar.get_telemetry()
+    assert telemetry["faults_injected"] == 1
     assert telemetry["retries_observed"] == 0
     assert telemetry["recovery_succeeded"] is False

@@ -3,15 +3,22 @@
 Intercepts outbound calls to OpenAI, Anthropic, Vertex AI, or local LLM mocks
 at the HTTP client level to simulate mid-stream SSE (Server-Sent Events) chunk drops,
 429 Retry-After storms, gateway timeouts, and network latency jitter.
+
+Patches both `httpx` and, when installed, `httpx2` -- the separate package the
+openai SDK switched to in 3.x. The two share an API but no classes, so a patch
+on one is invisible to clients of the other.
 """
 
 import asyncio
+import functools
+import importlib
 import random
 import threading
 import time
 import warnings
 from collections.abc import AsyncIterator, Callable, Iterator
-from typing import Any, cast
+from types import ModuleType
+from typing import Any, NamedTuple, cast
 
 import httpx
 
@@ -23,9 +30,13 @@ from pytest_agent_chaos.models import DEFAULT_SEED, ChaosProfile, ChaosTelemetry
 # read/write if two threads install or restore at the same instant.
 _PATCH_LOCK = threading.Lock()
 
+_DROP_MESSAGE = "pytest-agent-chaos: Peer connection closed unexpectedly mid-stream."
+
 
 class ChaosSyncByteStream(httpx.SyncByteStream):
     """Sync byte stream that injects chunk drop or latency midway through reading."""
+
+    _drop_error: type[Exception] = httpx.RemoteProtocolError
 
     def __init__(
         self,
@@ -60,9 +71,7 @@ class ChaosSyncByteStream(httpx.SyncByteStream):
                     self._telemetry.faults_injected += 1
                 if self._on_drop:
                     self._on_drop()
-                raise httpx.RemoteProtocolError(
-                    "pytest-agent-chaos: Peer connection closed unexpectedly mid-stream."
-                )
+                raise self._drop_error(_DROP_MESSAGE)
 
             yield chunk
 
@@ -73,6 +82,8 @@ class ChaosSyncByteStream(httpx.SyncByteStream):
 
 class ChaosAsyncByteStream(httpx.AsyncByteStream):
     """Async byte stream that injects chunk drop or latency midway through async reading."""
+
+    _drop_error: type[Exception] = httpx.RemoteProtocolError
 
     def __init__(
         self,
@@ -107,9 +118,7 @@ class ChaosAsyncByteStream(httpx.AsyncByteStream):
                     self._telemetry.faults_injected += 1
                 if self._on_drop:
                     self._on_drop()
-                raise httpx.RemoteProtocolError(
-                    "pytest-agent-chaos: Peer connection closed unexpectedly mid-stream."
-                )
+                raise self._drop_error(_DROP_MESSAGE)
 
             yield chunk
 
@@ -118,8 +127,50 @@ class ChaosAsyncByteStream(httpx.AsyncByteStream):
             await self._original_stream.aclose()
 
 
+class _Transport(NamedTuple):
+    """An HTTP client library whose Client/AsyncClient.send the sandbox patches."""
+
+    lib: ModuleType
+    sync_stream: type[ChaosSyncByteStream]
+    async_stream: type[ChaosAsyncByteStream]
+
+
+class _Patch(NamedTuple):
+    """The send methods one sandbox replaced on one library, and what it replaced them with."""
+
+    transport: _Transport
+    original_sync_send: Callable[..., Any]
+    original_async_send: Callable[..., Any]
+    patched_sync_send: Callable[..., Any]
+    patched_async_send: Callable[..., Any]
+
+
+@functools.cache
+def _transports() -> tuple[_Transport, ...]:
+    """httpx always; httpx2 too when it's installed (openai>=3 depends on it)."""
+    transports = [_Transport(httpx, ChaosSyncByteStream, ChaosAsyncByteStream)]
+    try:
+        httpx2 = importlib.import_module("httpx2")
+    except ImportError:
+        return tuple(transports)
+    # httpx2 only reads a Response.stream that is an instance of its own stream base
+    # classes, and its callers (e.g. the openai SDK) only catch httpx2 exceptions.
+    sync_stream = type(
+        "ChaosHttpx2SyncByteStream",
+        (ChaosSyncByteStream, httpx2.SyncByteStream),
+        {"_drop_error": httpx2.RemoteProtocolError},
+    )
+    async_stream = type(
+        "ChaosHttpx2AsyncByteStream",
+        (ChaosAsyncByteStream, httpx2.AsyncByteStream),
+        {"_drop_error": httpx2.RemoteProtocolError},
+    )
+    transports.append(_Transport(httpx2, sync_stream, async_stream))
+    return tuple(transports)
+
+
 class StreamChaosSandbox:
-    """Manages transport-level interception for httpx Client and AsyncClient."""
+    """Manages transport-level interception for httpx (and httpx2) Client and AsyncClient."""
 
     def __init__(self, profile: ChaosProfile) -> None:
         self.profile = profile
@@ -128,10 +179,8 @@ class StreamChaosSandbox:
         # depend on what other sandboxes have already pulled from global random.
         # Falls back to DEFAULT_SEED (not OS entropy) if the profile wasn't seeded.
         self._rng = random.Random(profile.seed if profile.seed is not None else DEFAULT_SEED)
-        self._original_sync_send: Callable[..., Any] | None = None
-        self._original_async_send: Callable[..., Any] | None = None
-        self._patched_sync_send: Callable[..., Any] | None = None
-        self._patched_async_send: Callable[..., Any] | None = None
+        # Keyed by library name ("httpx", "httpx2"); filled in by __enter__.
+        self._patches: dict[str, _Patch] = {}
         self._is_active = False
         # Endpoints (method, host, path) that have received an injected fault.
         self._faulted_endpoints: set[tuple[str, str, str]] = set()
@@ -154,6 +203,16 @@ class StreamChaosSandbox:
         if response.is_success:
             self.telemetry.recovery_succeeded = True
 
+    def _patch_for(self, client: httpx.Client | httpx.AsyncClient) -> _Patch:
+        """The patch for whichever library (httpx or httpx2) `client` belongs to."""
+        for patch in self._patches.values():
+            lib = patch.transport.lib
+            if isinstance(client, (lib.Client, lib.AsyncClient)):
+                return patch
+        raise RuntimeError(
+            f"pytest_agent_chaos: StreamChaosSandbox has no patch for {type(client).__name__}"
+        )
+
     def is_target_host(self, host: str) -> bool:
         """Determines if the requested host should be intercepted."""
         if self.profile.intercept_all_hosts:
@@ -173,7 +232,9 @@ class StreamChaosSandbox:
             return candidate
         return None
 
-    def _generate_429_response(self, request: httpx.Request) -> httpx.Response:
+    def _generate_429_response(
+        self, request: httpx.Request, lib: ModuleType = httpx
+    ) -> httpx.Response:
         self.telemetry.faults_injected += 1
         self._note_fault(request)
         headers = {
@@ -185,25 +246,33 @@ class StreamChaosSandbox:
             b'{"error": {"message": "Rate limit exceeded. Quota exhausted.", '
             b'"type": "insufficient_quota", "code": "rate_limit_exceeded"}}'
         )
-        return httpx.Response(
-            status_code=429,
-            headers=headers,
-            content=content,
-            request=request,
+        return cast(
+            httpx.Response,
+            lib.Response(
+                status_code=429,
+                headers=headers,
+                content=content,
+                request=request,
+            ),
         )
 
-    def _generate_504_response(self, request: httpx.Request) -> httpx.Response:
+    def _generate_504_response(
+        self, request: httpx.Request, lib: ModuleType = httpx
+    ) -> httpx.Response:
         self.telemetry.faults_injected += 1
         self._note_fault(request)
         headers = {"Content-Type": "application/json"}
         content = (
             b'{"error": {"message": "Gateway Timeout from upstream LLM provider.", "code": 504}}'
         )
-        return httpx.Response(
-            status_code=504,
-            headers=headers,
-            content=content,
-            request=request,
+        return cast(
+            httpx.Response,
+            lib.Response(
+                status_code=504,
+                headers=headers,
+                content=content,
+                request=request,
+            ),
         )
 
     def intercept_sync_send(
@@ -213,32 +282,34 @@ class StreamChaosSandbox:
         *args: Any,
         **kwargs: Any,
     ) -> httpx.Response:
-        """Intercepts synchronous httpx.Client.send calls."""
-        assert self._original_sync_send is not None
+        """Intercepts synchronous httpx.Client.send (or httpx2.Client.send) calls."""
+        patch = self._patch_for(client)
+        lib = patch.transport.lib
+        original_send = patch.original_sync_send
 
         if not self.is_target_host(request.url.host):
-            return cast(httpx.Response, self._original_sync_send(client, request, *args, **kwargs))
+            return cast(httpx.Response, original_send(client, request, *args, **kwargs))
 
         self.telemetry.total_calls_intercepted += 1
 
         active_fault = self._get_active_fault()
 
         if active_fault is None:
-            clean = cast(httpx.Response, self._original_sync_send(client, request, *args, **kwargs))
+            clean = cast(httpx.Response, original_send(client, request, *args, **kwargs))
             self._note_response(request, clean)
             return clean
 
         # Inject Faults
         if active_fault == FaultType.RATE_LIMIT_429:
-            return self._generate_429_response(request)
+            return self._generate_429_response(request, lib)
 
         if active_fault == FaultType.GATEWAY_TIMEOUT_504:
-            return self._generate_504_response(request)
+            return self._generate_504_response(request, lib)
 
         if active_fault == FaultType.CONNECTION_TIMEOUT:
             self.telemetry.faults_injected += 1
             self._note_fault(request)
-            raise httpx.ConnectTimeout(
+            raise lib.ConnectTimeout(
                 f"pytest-agent-chaos: Simulated connection timeout to {request.url.host}",
                 request=request,
             )
@@ -249,18 +320,16 @@ class StreamChaosSandbox:
             self._note_fault(request)
 
         if active_fault != FaultType.SSE_MIDSTREAM_DROP:
-            return cast(httpx.Response, self._original_sync_send(client, request, *args, **kwargs))
+            return cast(httpx.Response, original_send(client, request, *args, **kwargs))
 
         # SSE drop: only this call is forced to stream, so the body can be cut mid-read.
         caller_streams = bool(kwargs.get("stream", False))
         send_kwargs = {**kwargs, "stream": True}
-        response = cast(
-            httpx.Response, self._original_sync_send(client, request, *args, **send_kwargs)
-        )
+        response = cast(httpx.Response, original_send(client, request, *args, **send_kwargs))
         # Only mark this endpoint as faulted if the drop actually fires -- if the
         # response has fewer chunks than drop_after_chunks, nothing is ever dropped,
         # and the endpoint must not look "faulted" to the next call's recovery check.
-        response.stream = ChaosSyncByteStream(
+        response.stream = patch.transport.sync_stream(
             original_stream=cast(Iterator[bytes], response.stream),
             drop_after_chunks=self.profile.drop_after_chunks,
             should_drop=True,
@@ -286,13 +355,13 @@ class StreamChaosSandbox:
         *args: Any,
         **kwargs: Any,
     ) -> httpx.Response:
-        """Intercepts asynchronous httpx.AsyncClient.send calls."""
-        assert self._original_async_send is not None
+        """Intercepts asynchronous httpx.AsyncClient.send (or httpx2.AsyncClient.send) calls."""
+        patch = self._patch_for(client)
+        lib = patch.transport.lib
+        original_send = patch.original_async_send
 
         if not self.is_target_host(request.url.host):
-            return cast(
-                httpx.Response, await self._original_async_send(client, request, *args, **kwargs)
-            )
+            return cast(httpx.Response, await original_send(client, request, *args, **kwargs))
 
         self.telemetry.total_calls_intercepted += 1
 
@@ -301,21 +370,21 @@ class StreamChaosSandbox:
         if active_fault is None:
             clean = cast(
                 httpx.Response,
-                await self._original_async_send(client, request, *args, **kwargs),
+                await original_send(client, request, *args, **kwargs),
             )
             self._note_response(request, clean)
             return clean
 
         if active_fault == FaultType.RATE_LIMIT_429:
-            return self._generate_429_response(request)
+            return self._generate_429_response(request, lib)
 
         if active_fault == FaultType.GATEWAY_TIMEOUT_504:
-            return self._generate_504_response(request)
+            return self._generate_504_response(request, lib)
 
         if active_fault == FaultType.CONNECTION_TIMEOUT:
             self.telemetry.faults_injected += 1
             self._note_fault(request)
-            raise httpx.ConnectTimeout(
+            raise lib.ConnectTimeout(
                 f"pytest-agent-chaos: Simulated async connection timeout to {request.url.host}",
                 request=request,
             )
@@ -328,17 +397,17 @@ class StreamChaosSandbox:
         if active_fault != FaultType.SSE_MIDSTREAM_DROP:
             return cast(
                 httpx.Response,
-                await self._original_async_send(client, request, *args, **kwargs),
+                await original_send(client, request, *args, **kwargs),
             )
 
         caller_streams = bool(kwargs.get("stream", False))
         send_kwargs = {**kwargs, "stream": True}
         response = cast(
             httpx.Response,
-            await self._original_async_send(client, request, *args, **send_kwargs),
+            await original_send(client, request, *args, **send_kwargs),
         )
         # See the sync path above: only mark faulted if the drop actually fires.
-        response.stream = ChaosAsyncByteStream(
+        response.stream = patch.transport.async_stream(
             original_stream=cast(AsyncIterator[bytes], response.stream),
             drop_after_chunks=self.profile.drop_after_chunks,
             should_drop=True,
@@ -355,8 +424,35 @@ class StreamChaosSandbox:
                 raise
         return response
 
+    def _install(self, transport: _Transport) -> None:
+        lib = transport.lib
+        sandbox = self
+
+        def patched_sync_send(
+            client_self: httpx.Client, request: httpx.Request, *args: Any, **kwargs: Any
+        ) -> httpx.Response:
+            return sandbox.intercept_sync_send(client_self, request, *args, **kwargs)
+
+        async def patched_async_send(
+            client_self: httpx.AsyncClient,
+            request: httpx.Request,
+            *args: Any,
+            **kwargs: Any,
+        ) -> httpx.Response:
+            return await sandbox.intercept_async_send(client_self, request, *args, **kwargs)
+
+        self._patches[lib.__name__] = _Patch(
+            transport=transport,
+            original_sync_send=lib.Client.send,
+            original_async_send=lib.AsyncClient.send,
+            patched_sync_send=patched_sync_send,
+            patched_async_send=patched_async_send,
+        )
+        lib.Client.send = patched_sync_send
+        lib.AsyncClient.send = patched_async_send
+
     def __enter__(self) -> "StreamChaosSandbox":
-        """Installs monkeypatches on httpx.Client.send and httpx.AsyncClient.send.
+        """Installs monkeypatches on Client.send and AsyncClient.send (httpx, and httpx2 if installed).
 
         Sandboxes nest like any other context manager: entering a second sandbox
         while the first is still active is fine, as long as they are exited in
@@ -365,33 +461,14 @@ class StreamChaosSandbox:
         """
         with _PATCH_LOCK:
             if not self._is_active:
-                self._original_sync_send = httpx.Client.send
-                self._original_async_send = httpx.AsyncClient.send
-
-                sandbox = self
-
-                def patched_sync_send(
-                    client_self: httpx.Client, request: httpx.Request, *args: Any, **kwargs: Any
-                ) -> httpx.Response:
-                    return sandbox.intercept_sync_send(client_self, request, *args, **kwargs)
-
-                async def patched_async_send(
-                    client_self: httpx.AsyncClient,
-                    request: httpx.Request,
-                    *args: Any,
-                    **kwargs: Any,
-                ) -> httpx.Response:
-                    return await sandbox.intercept_async_send(client_self, request, *args, **kwargs)
-
-                self._patched_sync_send = patched_sync_send
-                self._patched_async_send = patched_async_send
-                httpx.Client.send = patched_sync_send  # type: ignore[assignment,method-assign]
-                httpx.AsyncClient.send = patched_async_send  # type: ignore[assignment,method-assign]
+                self._patches = {}
+                for transport in _transports():
+                    self._install(transport)
                 self._is_active = True
         return self
 
     def __exit__(self, exc_type: object, exc_val: object, exc_tb: object) -> None:
-        """Restores original send methods on httpx.Client and httpx.AsyncClient.
+        """Restores the original send methods on every library this sandbox patched.
 
         Only restores if this sandbox's patch is still the one currently installed.
         If it isn't (a sandbox was exited out of LIFO order), restoring blindly would
@@ -403,26 +480,19 @@ class StreamChaosSandbox:
                 return
             self._is_active = False
 
-            if httpx.Client.send is self._patched_sync_send and self._original_sync_send:
-                httpx.Client.send = self._original_sync_send  # type: ignore[method-assign]
-            elif httpx.Client.send is self._patched_sync_send:
-                pass
-            else:
-                warnings.warn(
-                    "pytest_agent_chaos: StreamChaosSandbox exited out of LIFO order; "
-                    "another sandbox's patch is active, so httpx.Client.send was left as-is. "
-                    "Enter/exit sandboxes in strict reverse order to avoid this.",
-                    stacklevel=2,
-                )
-
-            if httpx.AsyncClient.send is self._patched_async_send and self._original_async_send:
-                httpx.AsyncClient.send = self._original_async_send  # type: ignore[method-assign]
-            elif httpx.AsyncClient.send is self._patched_async_send:
-                pass
-            else:
-                warnings.warn(
-                    "pytest_agent_chaos: StreamChaosSandbox exited out of LIFO order; "
-                    "another sandbox's patch is active, so httpx.AsyncClient.send was left as-is. "
-                    "Enter/exit sandboxes in strict reverse order to avoid this.",
-                    stacklevel=2,
-                )
+            for name, patch in self._patches.items():
+                lib = patch.transport.lib
+                for cls, patched, original in (
+                    (lib.Client, patch.patched_sync_send, patch.original_sync_send),
+                    (lib.AsyncClient, patch.patched_async_send, patch.original_async_send),
+                ):
+                    if cls.send is patched:
+                        cls.send = original
+                    else:
+                        warnings.warn(
+                            "pytest_agent_chaos: StreamChaosSandbox exited out of LIFO order; "
+                            f"another sandbox's patch is active, so {name}.{cls.__name__}.send "
+                            "was left as-is. Enter/exit sandboxes in strict reverse order to "
+                            "avoid this.",
+                            stacklevel=2,
+                        )
